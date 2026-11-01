@@ -8,6 +8,8 @@ import SessionPanel, { Dock } from "./components/SessionRail";
 import ParticleOrb from "./components/ParticleOrb";
 import Segmented from "./components/Segmented";
 import ConfirmDialog from "./components/ConfirmDialog";
+import Thread from "./components/Thread";
+import Composer from "./components/Composer";
 import { GlassDefs, useGlassLight, useLiquidRefraction } from "./lib/glass";
 import { baseName } from "./api.ts";
 import { FolderIcon, InfoIcon } from "./components/Icons";
@@ -78,6 +80,9 @@ export default function App() {
             <>
               <SessionHead fg={fg} />
               <CenterPanel fg={fg} tab={tab} onTab={setTab} />
+              <div className="asd-composer-row">
+                <Composer />
+              </div>
             </>
           )
         )}
@@ -310,7 +315,7 @@ function CenterPanel({ fg, tab, onTab }: { fg: SessionRow; tab: CenterTab; onTab
           { value: "routing", label: "Routing" },
         ]}
       />
-      <div className="asd-center-body">
+      <div className={`asd-center-body${tab === "chat" ? " asd-chat-body" : ""}`}>
         <section className="card asd-info">
           <div className="asd-info-head">
             <code>{fg.session_id}</code>
@@ -319,11 +324,7 @@ function CenterPanel({ fg, tab, onTab }: { fg: SessionRow; tab: CenterTab; onTab
           </div>
           <MemoRow fg={fg} />
         </section>
-        {tab === "chat" && (
-          <section className="card asd-placeholder">
-            <p className="asd-dim">대화 뷰 — 드라이버 트랜스크립트와 실시간 출력은 T4.x에서 연결됩니다.</p>
-          </section>
-        )}
+        {tab === "chat" && <Thread />}
         {tab === "plan" && (
           <section className="card asd-placeholder">
             <b>PLAN 요약</b>

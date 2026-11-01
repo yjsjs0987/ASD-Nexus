@@ -16,9 +16,9 @@ import {
   type ReactNode,
 } from "react";
 import * as api from "./api.ts";
-import type { DashboardSnapshot } from "../shared/protocol.ts";
+import type { DashboardSnapshot, JobKind } from "../shared/protocol.ts";
 import { getWsClient, initWsClient } from "./ws.ts";
-import { useWsStateUpdated } from "./events.ts";
+import { useWsStateUpdated, useWsJobStarted, useWsJobProgress, useWsJobFinished } from "./events.ts";
 
 /** api.ts re-export에서 파생한 타입(별도 import 경로 추가 없이) */
 export type ProjectSummary = api.GetProjectsResponse["projects"][number];
@@ -26,6 +26,18 @@ export type HarnessId = api.CreateSessionRequest["harness"];
 /** 서버가 보강한 스냅샷(openProject/state_updated 공용): DashboardSnapshot + git/전경 정보 */
 export type EnrichedSnapshot = api.OpenProjectResponse;
 export type SessionRow = DashboardSnapshot["sessions"][number];
+
+/** 진행 중·마지막 작업(job) — WS job_started/progress/finished가 확정한다(낙관적 갱신 없음) */
+export interface LiveJob {
+  jobId: string;
+  kind: JobKind;
+  sessionId: string;
+  runId?: string;
+  startedAt: number;
+  /** job_progress 기록(시각+메시지) — 결과 카드의 "과정" 타임라인이 쓴다 */
+  progress: { at: number; message: string }[];
+  finished: { ok: boolean; error?: string; at: number } | null;
+}
 
 /** 세션 카드 한 장에 필요한 최소 정보 — SessionRail(T1.1 이식본)이 쓰는 계약 그대로 */
 export interface SessionInfo {
@@ -62,6 +74,12 @@ interface AppCtx {
   /** 도크의 새 세션(+) → 첫 화면(환영/생성 폼)을 보여준다. 서버 상태와 무관한 화면 상태 */
   newSessionMode: boolean;
 
+  // ── 작업 실행(T4.1) ──
+  /** 열려 있는 프로젝트의 최근 job(어떤 세션 것이든 — 읽는 쪽이 전경 세션과 비교한다) */
+  liveJob: LiveJob | null;
+  /** 마지막으로 보낸 드라이버 프롬프트(결과 카드 머리 표시용 메타데이터 — 서버 상태 아님) */
+  lastPrompt: { sessionId: string; text: string; jobId?: string } | null;
+
   // ── 액션 ──
   refreshProjects: () => Promise<void>;
   /** 프로젝트 열기(api.openProject) → 스냅샷 로드 → WS 구독은 projectRoot 변경 효과가 한다 */
@@ -81,6 +99,10 @@ interface AppCtx {
   saveMemo: (sessionId: string, memo: string) => Promise<void>;
   /** 세션 페이즈 전환(api.updateSessionPhase) */
   setPhase: (sessionId: string, phase: "paused" | "running" | "done") => Promise<void>;
+  /** 프롬프트 전송 확정 후 결과 카드 머리에 보여 줄 문구를 기록한다 */
+  recordPrompt: (sessionId: string, text: string, jobId?: string) => void;
+  /** 컴포넌트가 잡은 오류를 공용 알림(toast)으로 올린다 */
+  reportError: (message: string) => void;
   clearError: () => void;
 }
 
@@ -102,6 +124,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [newSessionMode, setNewSessionMode] = useState(false);
+  const [liveJob, setLiveJob] = useState<LiveJob | null>(null);
+  const [lastPrompt, setLastPrompt] = useState<{ sessionId: string; text: string; jobId?: string } | null>(null);
 
   const projectRef = useRef(projectRoot);
   projectRef.current = projectRoot;
@@ -114,6 +138,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   // T2.1 events.ts 훅: state_updated → 스냅샷 확정
   useWsStateUpdated(applySnapshot);
+
+  // T4.1 job 이벤트: 열려 있는 프로젝트 것만 받는다(세션 필터는 Thread/Composer가 전경과 비교해 한다).
+  // UI 상태는 전부 WS 이벤트가 확정한다 — 여기서 미리 예측하지 않는다(낙관적 갱신 금지).
+  useWsJobStarted((p) => {
+    if (p.projectRoot !== projectRef.current) return;
+    setLiveJob({
+      jobId: p.jobId,
+      kind: p.kind,
+      sessionId: p.sessionId,
+      runId: p.runId,
+      startedAt: Date.now(),
+      progress: [],
+      finished: null,
+    });
+  });
+  useWsJobProgress((jobId, message) => {
+    setLiveJob((j) =>
+      j && j.jobId === jobId
+        ? { ...j, progress: [...j.progress.slice(-30), { at: Date.now(), message }] }
+        : j,
+    );
+  });
+  useWsJobFinished((p) => {
+    setLiveJob((j) =>
+      j && j.jobId === p.jobId ? { ...j, finished: { ok: p.ok, error: p.error, at: Date.now() } } : j,
+    );
+  });
 
   // WS 연결(1회). 재연결되면 열려 있는 프로젝트의 전체 상태를 다시 동기화한다.
   useEffect(() => {
@@ -163,6 +214,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     async (root: string) => {
       setLoading(true);
       setError(null);
+      setLiveJob(null);
+      setLastPrompt(null);
       try {
         const snap = await api.openProject(root);
         setProjectRoot(snap.projectRoot);
@@ -181,6 +234,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setProjectRoot(null);
     setSnapshot(null);
     setNewSessionMode(false);
+    setLiveJob(null);
+    setLastPrompt(null);
     void refreshProjects();
   }, [refreshProjects]);
 
@@ -234,6 +289,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const recordPrompt = useCallback((sessionId: string, text: string, jobId?: string) => {
+    setLastPrompt({ sessionId, text, jobId });
+  }, []);
+
+  const reportError = useCallback((message: string) => setError(message), []);
+
   const clearError = useCallback(() => setError(null), []);
 
   // ── 파생 상태(전부 스냅샷에서 계산, 로컬 복사본 없음) ──
@@ -270,6 +331,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       loading,
       error,
       newSessionMode,
+      liveJob,
+      lastPrompt,
       refreshProjects,
       openProject,
       showProjectPicker,
@@ -278,6 +341,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       createSession,
       saveMemo,
       setPhase,
+      recordPrompt,
+      reportError,
       clearError,
     }),
     [
@@ -290,6 +355,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       loading,
       error,
       newSessionMode,
+      liveJob,
+      lastPrompt,
       refreshProjects,
       openProject,
       showProjectPicker,
@@ -298,6 +365,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       createSession,
       saveMemo,
       setPhase,
+      recordPrompt,
+      reportError,
       clearError,
     ],
   );

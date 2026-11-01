@@ -1126,3 +1126,38 @@ body { background-image: var(--vignette), var(--horizon), var(--sky); background
 
 /* 오른쪽 인스펙터 자리의 안내 버튼(T4.x까지 비활성) */
 .dock-btn:disabled { opacity: 0.45; cursor: default; }
+
+/* ── 드라이버 실행 스트리밍(T4.1): Elysium 이식본 셀렉터는 건드리지 않고 .asd-* 만 추가한다 ── */
+
+/* Composer가 .main의 세 번째 auto row에 앉는다 */
+.asd-composer-row { grid-row: 3; min-width: 0; }
+
+/* 대화 탭: Thread가 몸통을 채우고 안에서 스크롤한다(바깥 이중 스크롤 방지) */
+.asd-chat-body { align-content: stretch; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; }
+
+/* 서브에이전트 로그 요약(최근 몇 줄 — 상세는 T4.2 SubagentInspector) */
+.asd-sublog { margin: 10px 0 8px; padding: 8px 12px; border-radius: 12px; background: var(--surface-2); display: grid; gap: 2px; max-height: 132px; overflow-y: auto; }
+.asd-sublog div { font-family: var(--mono); font-size: 11px; line-height: 1.5; color: var(--muted); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* 과정 타임라인(job 이벤트: 시각 + kind + 내용) */
+.asd-timeline { display: grid; gap: 4px; }
+.asd-tl-row { display: flex; align-items: baseline; gap: 8px; font-size: 12px; min-width: 0; }
+.asd-tl-time { flex: none; font-family: var(--mono); font-size: 11px; color: var(--dim); font-variant-numeric: tabular-nums; }
+.asd-tl-what { min-width: 0; color: var(--muted); overflow-wrap: anywhere; }
+
+/* 재개 명령(details/summary 네이티브 접기) */
+.asd-resume { position: relative; display: inline-flex; min-width: 0; }
+.asd-resume > summary { list-style: none; }
+.asd-resume > summary::-webkit-details-marker { display: none; }
+.asd-resume[open] > summary svg { transform: rotate(180deg); }
+.asd-pop { position: absolute; bottom: calc(100% + 10px); left: 0; z-index: 20; display: grid; gap: 8px; justify-items: start; width: min(480px, 72vw); padding: 12px 14px; border-radius: 16px; background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-lg); animation: pop 0.25s var(--spring) backwards; }
+.asd-resume-cmd { display: block; width: 100%; font-size: 11.5px; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--surface-2); padding: 8px 10px; border-radius: 10px; }
+
+/* 최근 대화 기록 패널(입력창 위에 뜬다) */
+.asd-tx-panel { position: absolute; bottom: calc(100% + 8px); left: 0; right: 0; z-index: 20; display: grid; gap: 8px; max-height: 320px; padding: 12px 14px; border-radius: 18px; background: var(--card); border: 1px solid var(--line); box-shadow: var(--shadow-lg); animation: pop 0.25s var(--spring) backwards; }
+.asd-tx-head { display: flex; align-items: center; justify-content: space-between; }
+.asd-tx-head b { font-size: 13px; }
+.asd-tx-list { display: grid; gap: 6px; overflow-y: auto; min-height: 0; }
+.asd-tx-item { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; }
+.asd-tx-item .tag { flex: none; margin-top: 1px; }
+.asd-tx-text { flex: 1; min-width: 0; color: var(--muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
