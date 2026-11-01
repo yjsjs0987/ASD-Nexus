@@ -7,6 +7,7 @@ import { PlanBoard } from "./components/PlanBoard/PlanBoard.tsx";
 import { SubagentInspector } from "./components/SubagentInspector/SubagentInspector.tsx";
 import { RoutingConfigPanel } from "./components/RoutingConfigPanel/RoutingConfigPanel.tsx";
 import { TerminalPane } from "./components/TerminalPane/TerminalPane.tsx";
+import { WorktreeDiffModal } from "./components/WorktreeDiffModal/WorktreeDiffModal.tsx";
 import { t } from "./i18n/index.ts";
 
 declare global {
@@ -99,6 +100,8 @@ export function App(): React.ReactElement {
         </main>
         <SubagentInspector />
       </div>
+
+      <WorktreeDiffModal />
 
       {toasts.length > 0 && (
         <div className="toast-container">
