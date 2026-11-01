@@ -6,6 +6,7 @@ import { Sidebar } from "./components/Sidebar/Sidebar.tsx";
 import { PlanBoard } from "./components/PlanBoard/PlanBoard.tsx";
 import { SubagentInspector } from "./components/SubagentInspector/SubagentInspector.tsx";
 import { RoutingConfigPanel } from "./components/RoutingConfigPanel/RoutingConfigPanel.tsx";
+import { TerminalPane } from "./components/TerminalPane/TerminalPane.tsx";
 import { t } from "./i18n/index.ts";
 
 declare global {
@@ -23,6 +24,8 @@ export function App(): React.ReactElement {
     setErrorBanner,
     toasts,
     dismissToast,
+    ptyTabs,
+    closePtyTab,
     activeCenterTab,
     setActiveCenterTab,
     initWsAndLoadProjects,
@@ -62,9 +65,32 @@ export function App(): React.ReactElement {
             >
               {t(locale, "routingTab")}
             </button>
+            {ptyTabs.map((pt) => {
+              const key = `pty:${pt.tabId}` as const;
+              return (
+                <button
+                  key={key}
+                  className={`tab-btn ${activeCenterTab === key ? "active" : ""}`}
+                  onClick={() => setActiveCenterTab(key)}
+                >
+                  &gt;_ {pt.title}{" "}
+                  <span
+                    style={{ marginLeft: 6 }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      closePtyTab(pt.tabId);
+                    }}
+                  >
+                    ×
+                  </span>
+                </button>
+              );
+            })}
           </div>
           <div className="center-content">
-            {activeCenterTab === "routing" ? (
+            {activeCenterTab.startsWith("pty:") ? (
+              <TerminalPane tabId={activeCenterTab.slice(4)} />
+            ) : activeCenterTab === "routing" ? (
               <RoutingConfigPanel />
             ) : (
               <PlanBoard />

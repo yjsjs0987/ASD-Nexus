@@ -14,9 +14,14 @@ import {
 } from "./context.ts";
 import { ASD_VERSION, type CommandRunner } from "./core-api.ts";
 import { JobRegistry } from "./jobs/job-registry.ts";
+import {
+  PtyManager,
+  type NodePtyModule,
+} from "./pty/pty-manager.ts";
 import { handleProjectsRoutes } from "./routes/projects.ts";
 import { handleSessionsRoutes } from "./routes/sessions.ts";
 import { handleTasksRoutes } from "./routes/tasks.ts";
+import { handleTranscriptsRoutes } from "./routes/transcripts.ts";
 import {
   collectEnrichedSnapshot,
   StateWatcher,
@@ -44,6 +49,9 @@ export interface StartGuiServerOptions {
   quietReadyLog?: boolean;
   watcherDebounceMs?: number;
   commandRunner?: CommandRunner;
+  forceDisablePty?: boolean;
+  ptyModuleOverride?: NodePtyModule | null;
+  ptyGracePeriodMs?: number;
 }
 
 export interface GuiServerHandle {
@@ -53,6 +61,7 @@ export interface GuiServerHandle {
   context: ServerContext;
   watcher: StateWatcher;
   jobRegistry: JobRegistry;
+  ptyManager: PtyManager;
   httpServer: http.Server;
   wss: WebSocketServer;
   broadcast: (msg: ServerWsMessage) => void;
@@ -177,6 +186,11 @@ export async function startGuiServer(
   const jobRegistry = new JobRegistry((projectRoot, msg) => {
     watcher.broadcastToProject(projectRoot, msg);
   });
+  const ptyManager = new PtyManager({
+    forceDisablePty: options?.forceDisablePty,
+    ptyModuleOverride: options?.ptyModuleOverride,
+    gracePeriodMs: options?.ptyGracePeriodMs,
+  });
 
   const webDistDir = options?.webDistDir ?? resolveDefaultWebDistDir();
   const isDevMode = Boolean(
@@ -273,7 +287,20 @@ export async function startGuiServer(
             parsedUrl,
             context,
             watcher,
-            jobRegistry
+            jobRegistry,
+            ptyManager
+          )
+        ) {
+          return;
+        }
+
+        if (
+          await handleTranscriptsRoutes(
+            req,
+            res,
+            parsedUrl,
+            context,
+            ptyManager
           )
         ) {
           return;
@@ -429,6 +456,13 @@ export async function startGuiServer(
             subSessionId: msg.subSessionId,
             runId: msg.runId,
           });
+        } else if (
+          msg.type === "pty_spawn" ||
+          msg.type === "pty_input" ||
+          msg.type === "pty_resize" ||
+          msg.type === "pty_kill"
+        ) {
+          await ptyManager.handleMessage(ws, msg);
         }
       } catch (err: unknown) {
         const errorMsg: ServerWsMessage = {
@@ -443,6 +477,7 @@ export async function startGuiServer(
     });
     ws.on("close", () => {
       watcher.unsubscribeProject(ws);
+      ptyManager.handleClientDisconnect(ws);
       clients.delete(ws);
     });
   });
@@ -488,6 +523,7 @@ export async function startGuiServer(
   }
 
   const close = async (): Promise<void> => {
+    ptyManager.closeAll();
     watcher.close();
     for (const client of clients) {
       try {
@@ -509,6 +545,7 @@ export async function startGuiServer(
     context,
     watcher,
     jobRegistry,
+    ptyManager,
     httpServer,
     wss,
     broadcast,
