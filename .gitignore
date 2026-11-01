@@ -3,3 +3,6 @@ dist/
 .asd/wt/
 .asd/merge.lock
 *.log
+src-tauri/target/
+src-tauri/gen/
+.omo/
