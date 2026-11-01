@@ -31,6 +31,13 @@ export interface TerminalPaneProps {
   initialTabs?: Omit<TerminalTab, "id" | "cols" | "rows">[];
 }
 
+interface MountedTerm {
+  term: Terminal;
+  fit: FitAddon;
+  element: HTMLDivElement;
+  dispose: () => void;
+}
+
 const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, ref) => {
   const app = useApp();
   const projectRoot = app.projectRoot;
@@ -40,7 +47,9 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [showTerminal, setShowTerminal] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const termRefs = useRef<Map<string, { term: Terminal; fit: FitAddon; element: HTMLDivElement }>>(new Map());
+  const termRefs = useRef<Map<string, MountedTerm>>(new Map());
+  const tabsRef = useRef<TerminalTab[]>([]);
+  tabsRef.current = tabs;
   const wsClient = getWsClient();
 
   const ptyInput = usePtyInput();
@@ -60,16 +69,25 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
   }, []);
 
   // 탭 닫기
-  const closeTab = useCallback((id: string) => {
-    const tabData = termRefs.current.get(id);
-    if (tabData) {
-      tabData.term.dispose();
-      termRefs.current.delete(id);
-    }
-    ptyKill(id);
-    setTabs((prev) => prev.filter((t) => t.id !== id));
-    setActiveTabId((prev) => (prev === id ? null : prev));
-  }, [ptyKill]);
+  const closeTab = useCallback(
+    (id: string) => {
+      const tabData = termRefs.current.get(id);
+      if (tabData) {
+        tabData.dispose();
+        termRefs.current.delete(id);
+      }
+      ptyKill(id);
+      setTabs((prev) => {
+        const next = prev.filter((t) => t.id !== id);
+        if (next.length === 0) {
+          setShowTerminal(false);
+        }
+        return next;
+      });
+      setActiveTabId((prev) => (prev === id ? null : prev));
+    },
+    [ptyKill],
+  );
 
   // 초기 탭 복원
   useEffect(() => {
@@ -79,71 +97,72 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ref를 통해 openTab 노출
-  useImperativeHandle(ref, () => ({
-    openTab: createTab,
-  }), [createTab]);
+  useImperativeHandle(
+    ref,
+    () => ({
+      openTab: createTab,
+    }),
+    [createTab],
+  );
 
-  // 활성 탭의 xterm 인스턴스 마운트
+  // 활성 탭의 xterm 인스턴스 마운트 및 표시 전환
   useEffect(() => {
-    if (!activeTabId) return;
-    const tab = tabs.find((t) => t.id === activeTabId);
+    termRefs.current.forEach((mounted, id) => {
+      mounted.element.style.display = id === activeTabId ? "block" : "none";
+    });
+
+    if (!activeTabId || !containerRef.current) return;
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
     if (!tab) return;
 
     const existing = termRefs.current.get(activeTabId);
     if (existing) {
-      // 이미 마운트됨 — 리사이즈만
-      requestAnimationFrame(() => existing.fit.fit());
+      requestAnimationFrame(() => {
+        try {
+          existing.fit.fit();
+        } catch {
+          // ignore fit errors when hidden
+        }
+      });
       return;
     }
 
     const element = document.createElement("div");
     element.style.width = "100%";
     element.style.height = "100%";
-    element.style.minHeight = "200px";
-    containerRef.current?.appendChild(element);
+    element.style.minHeight = "150px";
+    containerRef.current.appendChild(element);
 
     const term = new Terminal({
       cursorBlink: true,
-      fontFamily: "var(--mono)",
+      fontFamily: '"JetBrains Mono Variable", Consolas, monospace',
       fontSize: 13,
-      lineHeight: 1.5,
+      lineHeight: 1.45,
       letterSpacing: 0,
       theme: {
-        background: "var(--code-bg)",
-        foreground: "var(--code-ink)",
-        cursor: "var(--accent)",
-        cursorAccent: "var(--code-bg)",
-        selectionBackground: "rgba(var(--accent-rgb), 0.3)",
-        black: "var(--code-dim)",
-        red: "var(--err)",
-        green: "var(--hl)",
-        yellow: "var(--warn)",
-        blue: "var(--accent)",
-        magenta: "var(--c3)",
-        cyan: "var(--accent-2)",
-        white: "var(--ink)",
-        brightBlack: "var(--dim)",
-        brightRed: "var(--err)",
-        brightGreen: "var(--hl)",
-        brightYellow: "var(--warn)",
-        brightBlue: "var(--accent)",
-        brightMagenta: "var(--c3)",
-        brightCyan: "var(--accent-2)",
-        brightWhite: "var(--ink)",
+        background: "#0d1318",
+        foreground: "#e6edf3",
+        cursor: "#56d4c8",
+        cursorAccent: "#0d1318",
+        selectionBackground: "rgba(86, 212, 200, 0.28)",
       },
       convertEol: true,
-      scrollback: 10000,
+      scrollback: 5000,
       allowProposedApi: true,
     });
 
     const fit = new FitAddon();
     term.loadAddon(fit);
     term.open(element);
-    fit.fit();
+    try {
+      fit.fit();
+    } catch {
+      // ignore initial fit error
+    }
 
-    termRefs.current.set(activeTabId, { term, fit, element });
+    const initialCols = term.cols || tab.cols || 80;
+    const initialRows = term.rows || tab.rows || 24;
 
-    // WS pty_spawn 전송
     if (projectRoot) {
       wsClient.spawnPty({
         tabId: activeTabId,
@@ -153,43 +172,61 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
         harnessSessionId: tab.harnessSessionId,
         model: tab.model,
         asDriverOf: tab.asDriverOf,
-        cols: tab.cols,
-        rows: tab.rows,
+        cols: initialCols,
+        rows: initialRows,
       });
     }
 
-    // 입력 핸들러
-    const onData = (data: string) => {
+    const dataDisp = term.onData((data: string) => {
       ptyInput(activeTabId, data);
-    };
-    term.onData(onData);
+    });
 
-    // 리사이즈 옵저버
+    let lastCols = initialCols;
+    let lastRows = initialRows;
     const ro = new ResizeObserver(() => {
-      const tabData = termRefs.current.get(activeTabId);
-      if (tabData) {
-        const newCols = tabData.fit.fit();
-        const newRows = tabData.term.rows;
-        if (newCols !== tab.cols || newRows !== tab.rows) {
-          setTabs((prev) => prev.map((t) => t.id === activeTabId ? { ...t, cols: newCols, rows: newRows } : t));
-          ptyResize(activeTabId, newCols, newRows);
-        }
+      const current = termRefs.current.get(activeTabId);
+      if (!current) return;
+      try {
+        current.fit.fit();
+      } catch {
+        return;
+      }
+      const newCols = current.term.cols;
+      const newRows = current.term.rows;
+      if (newCols > 0 && newRows > 0 && (newCols !== lastCols || newRows !== lastRows)) {
+        lastCols = newCols;
+        lastRows = newRows;
+        setTabs((prev) =>
+          prev.map((t) => (t.id === activeTabId ? { ...t, cols: newCols, rows: newRows } : t)),
+        );
+        ptyResize(activeTabId, newCols, newRows);
       }
     });
     ro.observe(element);
 
-    // 정리
-    return () => {
-      term.offData(onData);
+    const dispose = () => {
+      dataDisp.dispose();
       ro.disconnect();
       term.dispose();
-      if (containerRef.current?.contains(element)) {
-        containerRef.current.removeChild(element);
+      if (element.parentNode) {
+        element.parentNode.removeChild(element);
       }
-      termRefs.current.delete(activeTabId);
-      ptyKill(activeTabId);
     };
-  }, [activeTabId, tabs, projectRoot, ptyInput, ptyResize, ptyKill, wsClient]);
+
+    termRefs.current.set(activeTabId, { term, fit, element, dispose });
+  }, [activeTabId, projectRoot, ptyInput, ptyResize, wsClient]);
+
+  // 언마운트 시 전체 정리
+  useEffect(() => {
+    const map = termRefs.current;
+    return () => {
+      map.forEach((mounted, id) => {
+        mounted.dispose();
+        ptyKill(id);
+      });
+      map.clear();
+    };
+  }, [ptyKill]);
 
   // WS pty_output 구독
   usePty({
@@ -215,8 +252,8 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
   // 프로젝트/세션 변경 시 터미널 초기화
   useEffect(() => {
     if (!projectRoot || !fgId) {
-      // 모든 탭 정리
-      termRefs.current.forEach((_, id) => {
+      termRefs.current.forEach((mounted, id) => {
+        mounted.dispose();
         ptyKill(id);
       });
       termRefs.current.clear();
@@ -231,14 +268,33 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
   }
 
   return (
-    <div className="asd-terminal-pane" style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
+    <div
+      className="asd-terminal-pane"
+      style={{ display: "flex", flexDirection: "column", height: "230px", minHeight: 0 }}
+    >
       {/* 탭 바 */}
-      <div className="asd-terminal-tabs" style={{ display: "flex", gap: 2, padding: "4px 8px", borderBottom: "1px solid var(--line)", background: "var(--surface)", flexShrink: 0 }}>
+      <div
+        className="asd-terminal-tabs"
+        style={{
+          display: "flex",
+          gap: 2,
+          padding: "4px 8px",
+          borderBottom: "1px solid var(--line)",
+          background: "var(--surface)",
+          flexShrink: 0,
+        }}
+      >
         {tabs.map((tab) => (
-          <button
+          <div
             key={tab.id}
+            role="tab"
+            tabIndex={0}
+            aria-selected={tab.id === activeTabId}
             className={`asd-terminal-tab ${tab.id === activeTabId ? "active" : ""}`}
             onClick={() => setActiveTabId(tab.id)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") setActiveTabId(tab.id);
+            }}
             style={{
               display: "inline-flex",
               alignItems: "center",
@@ -262,11 +318,17 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
               {tab.title}
             </span>
             {tab.harness && (
-              <span className="tag" style={{ fontSize: "9px", padding: "0 4px" }}>{tab.harness}</span>
+              <span className="tag" style={{ fontSize: "9px", padding: "0 4px" }}>
+                {tab.harness}
+              </span>
             )}
             <button
+              type="button"
               className="asd-tab-close"
-              onClick={(e) => { e.stopPropagation(); closeTab(tab.id); }}
+              onClick={(e) => {
+                e.stopPropagation();
+                closeTab(tab.id);
+              }}
               style={{
                 display: "inline-flex",
                 alignItems: "center",
@@ -284,13 +346,16 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
             >
               <ChevronIcon size={10} />
             </button>
-          </button>
+          </div>
         ))}
         {tabs.length === 0 && (
-          <span className="asd-dim" style={{ padding: "4px 8px", fontSize: "12.5px" }}>터미널 탭이 없습니다 — [터미널] 버튼으로 새 탭 열기</span>
+          <span className="asd-dim" style={{ padding: "4px 8px", fontSize: "12.5px" }}>
+            터미널 탭이 없습니다 — [터미널] 버튼으로 새 탭 열기
+          </span>
         )}
         <div style={{ flex: 1 }} />
         <button
+          type="button"
           className="btn sm ghost"
           onClick={() => createTab({ title: "새 터미널", cwd: projectRoot ?? undefined })}
           disabled={!projectRoot}
@@ -304,49 +369,59 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
       <div
         ref={containerRef}
         className="asd-terminal-container"
-        style={{ flex: 1, minHeight: 0, overflow: "hidden", background: "var(--code-bg)", position: "relative" }}
-      >
-        {activeTabId && !termRefs.current.has(activeTabId) && (
-          <div className="asd-terminal-connecting" style={{
-            position: "absolute",
-            inset: 0,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "var(--code-bg)",
-            color: "var(--muted)",
-            fontSize: "13px",
-          }}>
-            터미널 연결 중…
-          </div>
-        )}
-      </div>
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: "hidden",
+          background: "#0d1318",
+          position: "relative",
+        }}
+      />
 
       {/* 툴바 (하단) */}
-      <div className="asd-terminal-toolbar" style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 8,
-        padding: "6px 10px",
-        borderTop: "1px solid var(--line)",
-        background: "var(--surface)",
-        flexShrink: 0,
-      }}>
+      <div
+        className="asd-terminal-toolbar"
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          padding: "6px 10px",
+          borderTop: "1px solid var(--line)",
+          background: "var(--surface)",
+          flexShrink: 0,
+        }}
+      >
         <div style={{ display: "flex", gap: 4 }}>
-          <button className="btn sm ghost" onClick={() => activeTabId && ptyResize(activeTabId, 80, 24)} title="기본 크기(80x24)로 리셋">
+          <button
+            type="button"
+            className="btn sm ghost"
+            onClick={() => activeTabId && ptyResize(activeTabId, 80, 24)}
+            title="기본 크기(80x24)로 리셋"
+          >
             <RefreshIcon size={14} />
           </button>
-          <button className="btn sm ghost" onClick={() => activeTabId && ptyKill(activeTabId)} title="터미널 프로세스 강제 종료">
+          <button
+            type="button"
+            className="btn sm ghost"
+            onClick={() => activeTabId && ptyKill(activeTabId)}
+            title="터미널 프로세스 강제 종료"
+          >
             <StopIcon size={14} />
           </button>
-          <button className="btn sm ghost" onClick={() => activeTabId && ptyInput(activeTabId, "\x03")} title="SIGINT (Ctrl+C) 전송">
+          <button
+            type="button"
+            className="btn sm ghost"
+            onClick={() => activeTabId && ptyInput(activeTabId, "\x03")}
+            title="SIGINT (Ctrl+C) 전송"
+          >
             <span style={{ fontFamily: "var(--mono)", fontSize: "11px" }}>^C</span>
           </button>
         </div>
         <div style={{ flex: 1 }} />
         {activeTabId && (
           <span className="asd-dim" style={{ fontFamily: "var(--mono)", fontSize: "11px" }}>
-            {tabs.find((t) => t.id === activeTabId)?.cols ?? 80}×{tabs.find((t) => t.id === activeTabId)?.rows ?? 24}
+            {tabs.find((t) => t.id === activeTabId)?.cols ?? 80}×
+            {tabs.find((t) => t.id === activeTabId)?.rows ?? 24}
           </span>
         )}
       </div>

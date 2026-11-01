@@ -217,6 +217,11 @@ function ProjectPicker() {
     }
   };
 
+  const visibleProjects = useMemo(
+    () => app.projects.filter((p) => p.existsOnDisk !== false).slice(0, 6),
+    [app.projects],
+  );
+
   return (
     <div className="thread empty asd-fill">
       <div className="welcome">
@@ -227,13 +232,13 @@ function ProjectPicker() {
         <p className="welcome-sub">
           {app.loading
             ? "프로젝트를 여는 중…"
-            : app.projects.length > 0
+            : visibleProjects.length > 0
               ? "작업할 프로젝트를 선택하세요"
               : "아직 열었던 프로젝트가 없습니다 — 폴더 경로로 시작하세요"}
         </p>
-        {app.projects.length > 0 && (
+        {visibleProjects.length > 0 && (
           <div className="welcome-cards">
-            {app.projects.map((p, i) => (
+            {visibleProjects.map((p, i) => (
               <button
                 key={p.projectHash}
                 className={TONES[i % TONES.length]}
