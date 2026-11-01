@@ -3,6 +3,8 @@ import "./styles.css";
 import { useAsdStore } from "./store/useAsdStore.ts";
 import { TopBar } from "./components/TopBar/TopBar.tsx";
 import { Sidebar } from "./components/Sidebar/Sidebar.tsx";
+import { DriverBar } from "./components/DriverBar/DriverBar.tsx";
+import { TranscriptView } from "./components/TranscriptView/TranscriptView.tsx";
 import { PlanBoard } from "./components/PlanBoard/PlanBoard.tsx";
 import { SubagentInspector } from "./components/SubagentInspector/SubagentInspector.tsx";
 import { RoutingConfigPanel } from "./components/RoutingConfigPanel/RoutingConfigPanel.tsx";
@@ -53,7 +55,14 @@ export function App(): React.ReactElement {
       <div className="main-layout">
         <Sidebar />
         <main className="center-pane">
+          <DriverBar />
           <div className="center-tabs">
+            <button
+              className={`tab-btn ${activeCenterTab === "chat" ? "active" : ""}`}
+              onClick={() => setActiveCenterTab("chat")}
+            >
+              {t(locale, "chatTab")}
+            </button>
             <button
               className={`tab-btn ${activeCenterTab === "plan" ? "active" : ""}`}
               onClick={() => setActiveCenterTab("plan")}
@@ -91,6 +100,8 @@ export function App(): React.ReactElement {
           <div className="center-content">
             {activeCenterTab.startsWith("pty:") ? (
               <TerminalPane tabId={activeCenterTab.slice(4)} />
+            ) : activeCenterTab === "chat" ? (
+              <TranscriptView />
             ) : activeCenterTab === "routing" ? (
               <RoutingConfigPanel />
             ) : (

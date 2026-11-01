@@ -18,6 +18,7 @@ import {
   PtyManager,
   type NodePtyModule,
 } from "./pty/pty-manager.ts";
+import { handleDriversRoutes } from "./routes/drivers.ts";
 import { handleProjectsRoutes } from "./routes/projects.ts";
 import { handleSessionsRoutes } from "./routes/sessions.ts";
 import { handleTasksRoutes } from "./routes/tasks.ts";
@@ -269,6 +270,19 @@ export async function startGuiServer(
 
         if (
           await handleSessionsRoutes(
+            req,
+            res,
+            parsedUrl,
+            context,
+            watcher,
+            jobRegistry
+          )
+        ) {
+          return;
+        }
+
+        if (
+          await handleDriversRoutes(
             req,
             res,
             parsedUrl,

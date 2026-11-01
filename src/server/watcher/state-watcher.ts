@@ -19,6 +19,7 @@ import {
   collectDashboardSnapshot,
   discoverHarnessModels,
   getForegroundSessionId,
+  recoverOrphanedTasks,
   resolveAsdPaths,
   runGit,
   type DashboardSnapshot,
@@ -105,6 +106,7 @@ export class StateWatcher {
   private readonly logSubs = new Map<string, LogSubscription>();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private logPollTimer: ReturnType<typeof setInterval> | null = null;
+  private orphanTimer: ReturnType<typeof setInterval> | null = null;
   private readonly debounceMs: number;
 
   constructor(context: ServerContext, options?: { debounceMs?: number }) {
@@ -127,6 +129,44 @@ export class StateWatcher {
       this.flushAllLogSubscriptions();
     }, 100);
     this.logPollTimer.unref?.();
+
+    // 30s periodic orphan recovery sweep (Section 6.5-3)
+    this.orphanTimer = setInterval(() => {
+      for (const wp of this.projects.values()) {
+        this.runOrphanSweep(wp.projectRoot);
+      }
+    }, 30_000);
+    this.orphanTimer.unref?.();
+  }
+
+  runOrphanSweep(projectRoot: string): Array<{
+    sessionId: string;
+    taskId: string;
+    from: TaskStatus;
+    to: TaskStatus;
+    reason: string;
+  }> {
+    try {
+      const db = this.context.getDb(projectRoot);
+      const recovered = recoverOrphanedTasks({ db, projectRoot });
+      for (const r of recovered) {
+        this.broadcastToProject(projectRoot, {
+          type: "task_status_changed",
+          projectRoot,
+          sessionId: r.sessionId,
+          taskId: r.taskId,
+          from: r.from,
+          to: r.to,
+          reason: r.reason,
+        });
+      }
+      if (recovered.length > 0) {
+        void this.forceBroadcastProject(projectRoot);
+      }
+      return recovered;
+    } catch {
+      return [];
+    }
   }
 
   private normalizeKey(projectRoot: string): string {
@@ -597,6 +637,10 @@ export class StateWatcher {
     if (this.logPollTimer) {
       clearInterval(this.logPollTimer);
       this.logPollTimer = null;
+    }
+    if (this.orphanTimer) {
+      clearInterval(this.orphanTimer);
+      this.orphanTimer = null;
     }
     for (const [key, wp] of this.projects.entries()) {
       this.teardownWatchedProject(key, wp);
