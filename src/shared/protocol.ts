@@ -1,6 +1,6 @@
 /**
  * Shared REST and WebSocket protocol types for asd-gui (server & web).
- * Follows GUI_ARCHITECTURE.md v2.3 Section 6.
+ * Synchronized with agent-swarm-director v2.3.2 (CORE_CHANGE_REPORT.md).
  */
 
 import type {
@@ -9,14 +9,29 @@ import type {
   AsdPlanInput,
   AsdPlanOutput,
   DashboardSnapshot,
+  DriverDetachReason,
+  DriverRow,
+  DriverRunResult,
+  DriverSource,
   HarnessId,
   HarnessModelCatalog,
+  HarnessTranscript,
   KnownProjectSummary,
   RoutingConfig,
   SessionPhase,
   TaskStatus,
+  TranscriptMessage,
   WorktreeDiffSnapshot,
 } from "agent-swarm-director";
+
+export type {
+  DriverDetachReason,
+  DriverRow,
+  DriverRunResult,
+  DriverSource,
+  HarnessTranscript,
+  TranscriptMessage,
+};
 
 // ============================================================================
 // Standard Error Codes & Envelope (Section 6.1)
@@ -54,45 +69,6 @@ export interface ServerReadyMessage {
 }
 
 // ============================================================================
-// Driver & Transcript Types (v2 future-ready contracts for G5)
-// ============================================================================
-
-export type DriverSource =
-  | "cli-asd"
-  | "gui-headless"
-  | "gui-pty"
-  | "gui-link"
-  | "migrated";
-
-export interface DriverRow {
-  driverId: string;
-  sessionId: string;
-  harness: HarnessId;
-  model: string | null;
-  harnessSessionId: string | null;
-  source: DriverSource;
-  attachedAt: number;
-  detachedAt: number | null;
-  detachReason: "switched" | "user" | "session_done" | null;
-  briefingInjected: number;
-}
-
-export interface TranscriptMessage {
-  role: "user" | "assistant" | "tool" | "system";
-  text: string;
-  ts?: number;
-  toolName?: string;
-}
-
-export interface HarnessTranscript {
-  found: boolean;
-  path?: string;
-  messages: TranscriptMessage[];
-  truncated: boolean;
-  error?: string;
-}
-
-// ============================================================================
 // REST API Request / Response Types (Section 6.2)
 // ============================================================================
 
@@ -113,8 +89,17 @@ export interface OpenProjectRequest {
 }
 
 export type OpenProjectResponse = DashboardSnapshot & {
-  drivers?: Record<string, DriverRow[]>;
   isGitRepo?: boolean;
+  gitBranch?: string | null;
+  gitHeadSha?: string | null;
+  foregroundSessionId?: string | null;
+  recoveredOrphans?: Array<{
+    sessionId: string;
+    taskId: string;
+    from: TaskStatus;
+    to: TaskStatus;
+    reason: string;
+  }>;
 };
 
 export interface GetProjectModelsResponse {
@@ -151,7 +136,8 @@ export interface CreateSessionRequest {
 export interface CreateSessionResponse {
   ok: true;
   sessionId: string;
-  driver?: DriverRow;
+  driver: DriverRow;
+  foregroundSessionId: string | null;
 }
 
 export interface SaveSessionMemoRequest {
@@ -292,12 +278,14 @@ export interface GetResumeCommandResponse {
   cliString: string;
   command: string;
   args: string[];
+  ptyAvailable?: boolean;
 }
 
 // 5) Tasks (/api/tasks)
 export interface GetPlanMdResponse {
   content: string;
   foregroundSessionId: string | null;
+  stateVersion?: number;
 }
 
 export interface PutPlanMdRequest {
@@ -355,6 +343,7 @@ export interface RejectTaskRequest {
 export interface RejectTaskResponse {
   ok: boolean;
   status: "failed";
+  untouchedFiles?: string[];
 }
 
 export interface ResolveConflictRequest {
@@ -418,7 +407,12 @@ export type ServerWsMessage =
   | {
       type: "state_updated";
       projectRoot: string;
-      snapshot: DashboardSnapshot;
+      snapshot: DashboardSnapshot & {
+        isGitRepo?: boolean;
+        gitBranch?: string | null;
+        gitHeadSha?: string | null;
+        foregroundSessionId?: string | null;
+      };
     }
   | {
       type: "task_status_changed";
@@ -427,6 +421,7 @@ export type ServerWsMessage =
       taskId: string;
       from: TaskStatus | null;
       to: TaskStatus;
+      reason?: string;
     }
   | {
       type: "job_started";
@@ -446,6 +441,7 @@ export type ServerWsMessage =
       result?:
         | AsdDispatchOutput
         | AsdDebateOutput
+        | DriverRunResult
         | { runId: string; exitCode: number; harnessSessionId: string | null }
         | unknown;
       error?: string;

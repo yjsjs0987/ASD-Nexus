@@ -5,7 +5,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { openProjectDb, type SqliteDriver } from "./core-api.ts";
+import { isValidAsdSessionId, openProjectDb, type SqliteDriver } from "./core-api.ts";
 import type { ErrorCode } from "../shared/protocol.ts";
 
 export class HttpApiError extends Error {
@@ -20,10 +20,8 @@ export class HttpApiError extends Error {
   }
 }
 
-const SESSION_ID_PATTERN = /^[A-Za-z0-9._-]{1,64}$/;
-
 export function validateSessionId(sessionId: unknown): string {
-  if (typeof sessionId !== "string" || !SESSION_ID_PATTERN.test(sessionId)) {
+  if (!isValidAsdSessionId(sessionId)) {
     throw new HttpApiError(
       400,
       "INVALID_SESSION_ID",

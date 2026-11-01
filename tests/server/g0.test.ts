@@ -164,7 +164,7 @@ describe("G0 Foundation — Security, Core API, Bundle, and Web Load", () => {
           { projectRoot: sandboxProject, homeDir: tempHome }
         );
       },
-      /requires an explicit non-empty sessionId/
+      /requires an explicit valid sessionId/
     );
   });
 

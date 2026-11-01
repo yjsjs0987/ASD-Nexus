@@ -556,27 +556,35 @@ export async function handleVerify(input: AsdVerifyInput, ctx): Promise<AsdVerif
 export async function handleDebate(input: AsdDebateInput, ctx): Promise<AsdDebateOutput>;
 ```
 
-### 4.3 v2 신규 코어 API (모두 `[CR]`, 시그니처는 CORE_CHANGE_REQUEST.md가 최종 기준)
+### 4.3 v2 신규 코어 API (코어 v2.3.2 구현 반영 완료 ✅)
 ```ts
-// [CR-01] 드라이버
-attachDriver(db, { projectRoot, sessionId, harness, model?, harnessSessionId?, source }): DriverRow; // 기존 활성 드라이버 자동 detach
-setDriverHarnessSessionId(db, { driverId, harnessSessionId, projectRoot }): DriverRow;
-detachDriver(db, { driverId, reason, projectRoot }): void;
+// [CR-01] 드라이버 (`src/core/drivers.ts`)
+attachDriver(db, { projectRoot, sessionId, harness, model?, harnessSessionId?, source, now? }): { driver: DriverRow; previousDriverId: string | null; changed: boolean };
+setDriverHarnessSessionId(db, { projectRoot, driverId, harnessSessionId }): DriverRow;
+detachDriver(db, { projectRoot, driverId, reason }): void;
 getActiveDriver(db, sessionId): DriverRow | null;
 listDrivers(db, sessionId): DriverRow[];
-// [CR-02]
-buildDriverBriefing({ db, projectRoot, sessionId, maxChars? }): string;
-// [CR-03]
-runDriverTurn({ projectRoot, homeDir?, sessionId, prompt, driverId?, injectBriefing?, signal?, onOutput? }): Promise<DriverRunResult>;
-// [CR-10]
-readHarnessTranscript({ harness, harnessSessionId, projectRoot, transcriptPath?, homeDir?, limit?, before? }): HarnessTranscript;
-// [CR-12]
-recoverOrphanedTasks({ db, projectRoot, sessionId? }): Array<{ sessionId; taskId; from; to }>;
-// [CR-14]
-getForegroundSessionId(projectRoot): string | null;
-setForegroundSession({ db, projectRoot, sessionId }): void; // 이전 전경 세션의 PLAN.md 편집을 먼저 동기화한 뒤 재렌더
-// [CR-15]
-generateAsdSessionId(now?: Date): string; isValidAsdSessionId(id: string): boolean;
+syncSessionDriversToMainJson(db, projectRoot, sessionId): void;
+// [CR-02] (`src/core/drivers.ts`)
+buildDriverBriefing({ db, projectRoot, sessionId, maxChars?, locale? }): string;
+// [CR-03] (`src/core/drivers.ts`)
+runDriverTurn({ projectRoot, homeDir?, db, sessionId, prompt, driverId?, injectBriefing?, timeoutMs?, idleTimeoutMs?, signal?, onOutput?, commandRunner? }): Promise<DriverRunResult>;
+// [CR-08] (`src/core/workspace.ts`)
+getCommittedWorktreeChanges(projectRoot, wtPath): string[];
+// [CR-09] (`src/core/spawner.ts`)
+finalizeSubagentArtifacts({ projectRoot, sessionId, subSessionId, keep? }): void;
+// [CR-10] (`src/core/transcripts.ts`)
+locateHarnessTranscript(harness, sessionId, options?: { homeDir?; transcriptPath? }): TranscriptLocation;
+readHarnessTranscript(harness, sessionId, options?: { homeDir?; transcriptPath?; limit?; before?; maxReadBytes? }): HarnessTranscript;
+// [CR-12] (`src/core/workspace.ts` & `src/core/db.ts`)
+recoverOrphanedTasks({ db, projectRoot, sessionId?, now? }): Array<{ sessionId; taskId; from; to; reason }>;
+SqliteDriver.tryClaimTask(sessionId, taskId): boolean;
+// [CR-14] (`src/core/render.ts`)
+getForegroundSessionId(projectRoot, planMdPath?): string | null;
+setForegroundSession({ db, projectRoot, sessionId, planMdPath? }): { previous: string | null };
+// [CR-15] (`src/core/db.ts`)
+generateAsdSessionId(now?: number): string;
+isValidAsdSessionId(id: unknown): id is string;
 // [CR-16] ⏸ 연기
 SqliteDriver.updateSessionAutoApprove(sessionId, autoApprove: boolean): void;
 ```

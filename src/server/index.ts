@@ -1,21 +1,3 @@
-/**
- * ASD GUI Local Backend Server (src/server/index.ts)
- * Implements G0 Foundation:
- * - 127.0.0.1 binding, --port / --port 0 / --home / --no-open
- * - stdout ready JSON line: {"type":"asd-gui-ready","port":<n>,"token":"<hex>"}
- * - Token generation, /?token=<hex> HttpOnly; SameSite=Strict cookie exchange + 302 redirect
- * - Host/Origin/Token security guard on all /api/* and /ws
- * - Standardized error envelope
- */
-
-import * as child_process from "node:child_process";
-import * as fs from "node:fs";
-import * as http from "node:http";
-import type { AddressInfo } from "node:net";
-import * as path from "node:path";
-import { fileURLToPath } from "node:url";
-import { WebSocketServer, type WebSocket } from "ws";
-
 import {
   AUTH_COOKIE_NAME,
   generateAuthToken,
@@ -28,17 +10,29 @@ import {
   HttpApiError,
   ServerContext,
   validateProjectRoot,
+  validateSessionId,
 } from "./context.ts";
+import { ASD_VERSION } from "./core-api.ts";
+import { JobRegistry } from "./jobs/job-registry.ts";
+import { handleProjectsRoutes } from "./routes/projects.ts";
+import { handleSessionsRoutes } from "./routes/sessions.ts";
 import {
-  ASD_VERSION,
-  collectDashboardSnapshot,
-  listKnownProjects,
-} from "./core-api.ts";
+  collectEnrichedSnapshot,
+  StateWatcher,
+} from "./watcher/state-watcher.ts";
 import type {
   ClientWsMessage,
   ServerReadyMessage,
   ServerWsMessage,
 } from "../shared/protocol.ts";
+
+import * as child_process from "node:child_process";
+import * as fs from "node:fs";
+import * as http from "node:http";
+import type { AddressInfo } from "node:net";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
+import { WebSocketServer, type WebSocket } from "ws";
 
 export interface StartGuiServerOptions {
   port?: number;
@@ -47,6 +41,7 @@ export interface StartGuiServerOptions {
   isDevMode?: boolean;
   webDistDir?: string;
   quietReadyLog?: boolean;
+  watcherDebounceMs?: number;
 }
 
 export interface GuiServerHandle {
@@ -54,6 +49,8 @@ export interface GuiServerHandle {
   token: string;
   url: string;
   context: ServerContext;
+  watcher: StateWatcher;
+  jobRegistry: JobRegistry;
   httpServer: http.Server;
   wss: WebSocketServer;
   broadcast: (msg: ServerWsMessage) => void;
@@ -73,12 +70,10 @@ const MIME_TYPES: Record<string, string> = {
 
 function resolveDefaultWebDistDir(): string {
   const here = path.dirname(fileURLToPath(import.meta.url));
-  // When running from dist/server/server.js -> dist/web
   const candidateDist = path.resolve(here, "..", "web");
   if (fs.existsSync(path.join(candidateDist, "index.html"))) {
     return candidateDist;
   }
-  // When running from src/server/index.ts -> dist/web or src/web
   const rootDistWeb = path.resolve(here, "..", "..", "dist", "web");
   if (fs.existsSync(path.join(rootDistWeb, "index.html"))) {
     return rootDistWeb;
@@ -160,6 +155,24 @@ export async function startGuiServer(
   const requestedPort = options?.port ?? 4173;
   const token = generateAuthToken();
   const context = new ServerContext({ homeDir: options?.homeDir });
+  const watcher = new StateWatcher(context, {
+    debounceMs: options?.watcherDebounceMs,
+  });
+  const clients = new Set<WebSocket>();
+
+  const broadcast = (msg: ServerWsMessage) => {
+    const payload = JSON.stringify(msg);
+    for (const client of clients) {
+      if (client.readyState === client.OPEN) {
+        client.send(payload);
+      }
+    }
+  };
+
+  const jobRegistry = new JobRegistry((projectRoot, msg) => {
+    watcher.broadcastToProject(projectRoot, msg);
+  });
+
   const webDistDir = options?.webDistDir ?? resolveDefaultWebDistDir();
   const isDevMode = Boolean(
     options?.isDevMode ?? process.env.ASD_GUI_DEV === "1"
@@ -173,7 +186,6 @@ export async function startGuiServer(
       const parsedUrl = new URL(rawUrl, `http://127.0.0.1:${boundPort}`);
       const pathname = parsedUrl.pathname;
 
-      // Always verify Host header on every request to prevent DNS rebinding (Section 6.4)
       if (!isAllowedHost(req.headers.host, boundPort)) {
         sendErrorJson(
           res,
@@ -184,11 +196,19 @@ export async function startGuiServer(
         return;
       }
 
-      // Token cookie exchange on root / page load: /?token=<hex> -> Set-Cookie + 302 redirect
       const queryToken = parsedUrl.searchParams.get("token");
-      if (req.method === "GET" && queryToken !== null && !pathname.startsWith("/api/")) {
+      if (
+        req.method === "GET" &&
+        queryToken !== null &&
+        !pathname.startsWith("/api/")
+      ) {
         if (!safeTokenEquals(token, queryToken)) {
-          sendErrorJson(res, 401, "AUTH_REQUIRED", "Invalid token query parameter");
+          sendErrorJson(
+            res,
+            401,
+            "AUTH_REQUIRED",
+            "Invalid token query parameter"
+          );
           return;
         }
         parsedUrl.searchParams.delete("token");
@@ -206,7 +226,6 @@ export async function startGuiServer(
         return;
       }
 
-      // API Routes require full security verification (Host + Origin + Token)
       if (pathname.startsWith("/api/")) {
         const guard = verifyRequestSecurity(req, {
           token,
@@ -223,32 +242,22 @@ export async function startGuiServer(
           return;
         }
 
-        // Built-in G0/G1 baseline endpoints
-        if (req.method === "GET" && pathname === "/api/projects") {
-          const projects = listKnownProjects({ homeDir: context.homeDir });
-          sendJson(res, 200, { projects });
+        if (
+          await handleProjectsRoutes(req, res, parsedUrl, context, watcher)
+        ) {
           return;
         }
 
-        if (req.method === "POST" && pathname === "/api/projects/open") {
-          const body = await readJsonBody<{ projectRoot?: unknown }>(req);
-          const projectRoot = validateProjectRoot(body.projectRoot);
-          const snapshot = await collectDashboardSnapshot({
-            projectRoot,
-            homeDir: context.homeDir,
-          });
-          sendJson(res, 200, snapshot);
-          return;
-        }
-
-        if (req.method === "GET" && pathname === "/api/sessions/state") {
-          const projectRootParam = parsedUrl.searchParams.get("projectRoot");
-          const projectRoot = validateProjectRoot(projectRootParam);
-          const snapshot = await collectDashboardSnapshot({
-            projectRoot,
-            homeDir: context.homeDir,
-          });
-          sendJson(res, 200, snapshot);
+        if (
+          await handleSessionsRoutes(
+            req,
+            res,
+            parsedUrl,
+            context,
+            watcher,
+            jobRegistry
+          )
+        ) {
           return;
         }
 
@@ -261,9 +270,9 @@ export async function startGuiServer(
         return;
       }
 
-      // Serve static web files
       if (req.method === "GET" || req.method === "HEAD") {
-        let relPath = pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
+        const relPath =
+          pathname === "/" ? "index.html" : pathname.replace(/^\/+/, "");
         const candidatePath = path.resolve(webDistDir, relPath);
         const relCheck = path.relative(webDistDir, candidatePath);
         if (relCheck.startsWith("..") || path.isAbsolute(relCheck)) {
@@ -272,7 +281,10 @@ export async function startGuiServer(
         }
 
         let targetFile = candidatePath;
-        if (!fs.existsSync(targetFile) || fs.statSync(targetFile).isDirectory()) {
+        if (
+          !fs.existsSync(targetFile) ||
+          fs.statSync(targetFile).isDirectory()
+        ) {
           targetFile = path.join(webDistDir, "index.html");
         }
 
@@ -282,13 +294,13 @@ export async function startGuiServer(
           const content = fs.readFileSync(targetFile);
           res.writeHead(200, {
             "Content-Type": contentType,
-            "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=3600",
+            "Cache-Control":
+              ext === ".html" ? "no-cache" : "public, max-age=3600",
           });
           res.end(req.method === "HEAD" ? undefined : content);
           return;
         }
 
-        // Fallback minimal HTML if dist/web isn't built yet
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         res.end(
           `<!doctype html><html><head><meta charset="utf-8"><title>ASD GUI</title></head><body><div id="root">ASD GUI v${ASD_VERSION}</div></body></html>`
@@ -303,12 +315,20 @@ export async function startGuiServer(
         return;
       }
       const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("MERGE_LOCK_TIMEOUT") || message.includes("merge.lock")) {
+        sendErrorJson(
+          res,
+          423,
+          "LOCKED",
+          "다른 프로세스(CLI 등)가 병합 중입니다 (merge.lock timeout)"
+        );
+        return;
+      }
       sendErrorJson(res, 500, "CORE_ERROR", message);
     }
   });
 
   const wss = new WebSocketServer({ noServer: true });
-  const clients = new Set<WebSocket>();
 
   httpServer.on("upgrade", (req, socket, head) => {
     const rawUrl = req.url || "/";
@@ -355,10 +375,12 @@ export async function startGuiServer(
         const msg = JSON.parse(String(rawData)) as ClientWsMessage;
         if (msg.type === "subscribe_project") {
           const projectRoot = validateProjectRoot(msg.projectRoot);
-          const snapshot = await collectDashboardSnapshot({
+          watcher.subscribeProject(ws, projectRoot);
+          watcher.seedInitialBaseline(projectRoot);
+          const snapshot = await collectEnrichedSnapshot(
             projectRoot,
-            homeDir: context.homeDir,
-          });
+            context.homeDir
+          );
           const reply: ServerWsMessage = {
             type: "state_updated",
             projectRoot,
@@ -367,6 +389,28 @@ export async function startGuiServer(
           if (ws.readyState === ws.OPEN) {
             ws.send(JSON.stringify(reply));
           }
+        } else if (msg.type === "unsubscribe_project") {
+          const projectRoot = validateProjectRoot(msg.projectRoot);
+          watcher.unsubscribeProject(ws, projectRoot);
+        } else if (msg.type === "subscribe_log") {
+          const projectRoot = validateProjectRoot(msg.projectRoot);
+          const sessionId = validateSessionId(msg.sessionId);
+          watcher.subscribeLog(ws, {
+            projectRoot,
+            sessionId,
+            subSessionId: msg.subSessionId,
+            runId: msg.runId,
+            fromOffset: msg.fromOffset,
+          });
+        } else if (msg.type === "unsubscribe_log") {
+          const projectRoot = validateProjectRoot(msg.projectRoot);
+          const sessionId = validateSessionId(msg.sessionId);
+          watcher.unsubscribeLog(ws, {
+            projectRoot,
+            sessionId,
+            subSessionId: msg.subSessionId,
+            runId: msg.runId,
+          });
         }
       } catch (err: unknown) {
         const errorMsg: ServerWsMessage = {
@@ -380,6 +424,7 @@ export async function startGuiServer(
       }
     });
     ws.on("close", () => {
+      watcher.unsubscribeProject(ws);
       clients.delete(ws);
     });
   });
@@ -424,16 +469,8 @@ export async function startGuiServer(
     openBrowser(accessUrl);
   }
 
-  const broadcast = (msg: ServerWsMessage) => {
-    const payload = JSON.stringify(msg);
-    for (const client of clients) {
-      if (client.readyState === client.OPEN) {
-        client.send(payload);
-      }
-    }
-  };
-
   const close = async (): Promise<void> => {
+    watcher.close();
     for (const client of clients) {
       try {
         client.terminate();
@@ -452,6 +489,8 @@ export async function startGuiServer(
     token,
     url: accessUrl,
     context,
+    watcher,
+    jobRegistry,
     httpServer,
     wss,
     broadcast,
@@ -502,7 +541,10 @@ const isMainEntry = (): boolean => {
   try {
     const entry = path.resolve(process.argv[1]);
     const current = path.resolve(fileURLToPath(import.meta.url));
-    return entry === current || entry.endsWith(path.join("dist", "server", "server.js"));
+    return (
+      entry === current ||
+      entry.endsWith(path.join("dist", "server", "server.js"))
+    );
   } catch {
     return false;
   }
