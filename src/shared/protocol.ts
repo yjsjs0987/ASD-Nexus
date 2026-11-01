@@ -25,11 +25,16 @@ import type {
 } from "agent-swarm-director";
 
 export type {
+  AsdDebateOutput,
+  AsdDispatchOutput,
+  DashboardSnapshot,
   DriverDetachReason,
   DriverRow,
   DriverRunResult,
   DriverSource,
+  HarnessId,
   HarnessTranscript,
+  TaskStatus,
   TranscriptMessage,
 };
 
