@@ -51,6 +51,15 @@ export interface SessionInfo {
   updatedAt: string;
 }
 
+export interface OpenTerminalParams {
+  title: string;
+  cwd?: string;
+  harness?: HarnessId;
+  harnessSessionId?: string;
+  model?: string;
+  asDriverOf?: { sessionId: string; driverId: string };
+}
+
 interface AppCtx {
   // ── 프로젝트 ──
   /** 현재 열린 프로젝트 루트. null이면 프로젝트 선택 화면 */
@@ -79,6 +88,22 @@ interface AppCtx {
   liveJob: LiveJob | null;
   /** 마지막으로 보낸 드라이버 프롬프트(결과 카드 머리 표시용 메타데이터 — 서버 상태 아님) */
   lastPrompt: { sessionId: string; text: string; jobId?: string } | null;
+
+  // ── T4.2 / T5.1: 선택된 작업 ID 및 Diff 모달 / 터미널 연동 ──
+  /** PlanBoard에서 클릭한 작업 ID — SubagentInspector가 이 ID의 sub_session_id를 구독함 */
+  selectedTaskId: string | null;
+  /** 선택된 작업 ID 설정 */
+  setSelectedTaskId: (id: string | null) => void;
+  /** WorktreeDiffModal 표시 여부 */
+  showWorktreeDiff: boolean;
+  /** Diff 모달 열기 (선택적으로 taskId 함께 지정) */
+  openDiff: (taskId?: string) => void;
+  /** Diff 모달 닫기 */
+  closeDiff: () => void;
+  /** TerminalPane에 새 탭 열기 요청 */
+  openTerminalTab: (params: OpenTerminalParams) => void;
+  /** TerminalPane이 마운트될 때 탭 생성 핸들러 등록 */
+  registerTerminalOpener: (fn: ((params: OpenTerminalParams) => void) | null) => void;
 
   // ── 액션 ──
   refreshProjects: () => Promise<void>;
@@ -126,6 +151,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [newSessionMode, setNewSessionMode] = useState(false);
   const [liveJob, setLiveJob] = useState<LiveJob | null>(null);
   const [lastPrompt, setLastPrompt] = useState<{ sessionId: string; text: string; jobId?: string } | null>(null);
+  const [selectedTaskId, setSelectedTaskIdState] = useState<string | null>(null);
+  const [showWorktreeDiff, setShowWorktreeDiff] = useState(false);
+  const terminalOpenerRef = useRef<((params: OpenTerminalParams) => void) | null>(null);
 
   const projectRef = useRef(projectRoot);
   projectRef.current = projectRoot;
@@ -216,6 +244,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setError(null);
       setLiveJob(null);
       setLastPrompt(null);
+      setSelectedTaskIdState(null);
+      setShowWorktreeDiff(false);
       try {
         const snap = await api.openProject(root);
         setProjectRoot(snap.projectRoot);
@@ -236,6 +266,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setNewSessionMode(false);
     setLiveJob(null);
     setLastPrompt(null);
+    setSelectedTaskIdState(null);
+    setShowWorktreeDiff(false);
     void refreshProjects();
   }, [refreshProjects]);
 
@@ -293,6 +325,31 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setLastPrompt({ sessionId, text, jobId });
   }, []);
 
+  const setSelectedTaskId = useCallback((id: string | null) => {
+    setSelectedTaskIdState(id);
+  }, []);
+
+  const openDiff = useCallback((taskId?: string) => {
+    if (taskId !== undefined) {
+      setSelectedTaskIdState(taskId);
+    }
+    setShowWorktreeDiff(true);
+  }, []);
+
+  const closeDiff = useCallback(() => {
+    setShowWorktreeDiff(false);
+  }, []);
+
+  const registerTerminalOpener = useCallback((fn: ((params: OpenTerminalParams) => void) | null) => {
+    terminalOpenerRef.current = fn;
+  }, []);
+
+  const openTerminalTab = useCallback((params: OpenTerminalParams) => {
+    if (terminalOpenerRef.current) {
+      terminalOpenerRef.current(params);
+    }
+  }, []);
+
   const reportError = useCallback((message: string) => setError(message), []);
 
   const clearError = useCallback(() => setError(null), []);
@@ -333,6 +390,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       newSessionMode,
       liveJob,
       lastPrompt,
+      selectedTaskId,
+      setSelectedTaskId,
+      showWorktreeDiff,
+      openDiff,
+      closeDiff,
+      openTerminalTab,
+      registerTerminalOpener,
       refreshProjects,
       openProject,
       showProjectPicker,
@@ -357,6 +421,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
       newSessionMode,
       liveJob,
       lastPrompt,
+      selectedTaskId,
+      setSelectedTaskId,
+      showWorktreeDiff,
+      openDiff,
+      closeDiff,
+      openTerminalTab,
+      registerTerminalOpener,
       refreshProjects,
       openProject,
       showProjectPicker,

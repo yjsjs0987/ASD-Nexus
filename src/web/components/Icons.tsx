@@ -1,8 +1,8 @@
 // 가는 선 아이콘(currentColor로 그린다).
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 
-const Svg = ({ children, size = 18 }: { children: ReactNode; size?: number }) => (
-  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+const Svg = ({ children, size = 18, style }: { children: ReactNode; size?: number; style?: CSSProperties }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" style={style} aria-hidden>
     {children}
   </svg>
 );
@@ -12,8 +12,8 @@ export const SendIcon = () => (
     <path d="M12 19V5M6 11l6-6 6 6" />
   </Svg>
 );
-export const StopIcon = () => (
-  <Svg size={16}>
+export const StopIcon = ({ size = 16 }: { size?: number } = {}) => (
+  <Svg size={size}>
     <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
   </Svg>
 );
@@ -50,8 +50,8 @@ export const CopyIcon = () => (
     <path d="M5 15V6a2 2 0 0 1 2-2h8" />
   </Svg>
 );
-export const ChevronIcon = ({ open }: { open?: boolean }) => (
-  <Svg size={14}>
+export const ChevronIcon = ({ open, size = 14, style }: { open?: boolean; size?: number; style?: CSSProperties } = {}) => (
+  <Svg size={size} style={style}>
     <path d={open ? "M6 15l6-6 6 6" : "M6 9l6 6 6-6"} />
   </Svg>
 );
@@ -60,8 +60,8 @@ export const FolderIcon = () => (
     <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
   </Svg>
 );
-export const RefreshIcon = () => (
-  <Svg size={15}>
+export const RefreshIcon = ({ size = 15 }: { size?: number } = {}) => (
+  <Svg size={size}>
     <path d="M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7" />
   </Svg>
 );
@@ -171,5 +171,39 @@ export const CouncilIcon = ({ size = 18 }: { size?: number }) => (
   <Svg size={size}>
     <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h5A2.5 2.5 0 0 1 14 6.5v2A2.5 2.5 0 0 1 11.5 11H8l-2.5 2v-2.1A2.5 2.5 0 0 1 4 8.5z" />
     <path d="M10 15.5a2.5 2.5 0 0 0 2.5 2.5H16l2.5 2v-2.1a2.5 2.5 0 0 0 1.5-2.3v-2.1a2.5 2.5 0 0 0-2.5-2.5H17" />
+  </Svg>
+);
+export const PlayIcon = ({ size = 15 }: { size?: number } = {}) => (
+  <Svg size={size}>
+    <path d="M7 5v14l11-7z" fill="currentColor" />
+  </Svg>
+);
+export const SaveIcon = ({ size = 15 }: { size?: number } = {}) => (
+  <Svg size={size}>
+    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+    <path d="M17 21v-8H7v8M7 3v5h8" />
+  </Svg>
+);
+export const AlertTriangleIcon = ({ size = 16 }: { size?: number } = {}) => (
+  <Svg size={size}>
+    <path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z" />
+    <path d="M12 9v4M12 17h.01" />
+  </Svg>
+);
+export const TerminalIcon = ({ size = 15, style }: { size?: number; style?: CSSProperties } = {}) => (
+  <Svg size={size} style={style}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="m7 9 3 3-3 3M12 15h5" />
+  </Svg>
+);
+export const LinkIcon = ({ size = 15 }: { size?: number } = {}) => (
+  <Svg size={size}>
+    <path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7.1-7.1l-1.1 1.1" />
+    <path d="M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7.1 7.1l1.1-1.1" />
+  </Svg>
+);
+export const XIcon = ({ size = 16 }: { size?: number } = {}) => (
+  <Svg size={size}>
+    <path d="M6 6l12 12M18 6L6 18" />
   </Svg>
 );

@@ -1,8 +1,7 @@
-// T3.1 — Elysium App.tsx의 레이어 구조(입자 배경 → 도크 · 세션 레일 · 본문 · 확인 창)를
+// T3.1 / T4.x / T5.1 — Elysium App.tsx의 레이어 구조(입자 배경 → 도크 · 세션 레일 · 본문 · 오른쪽 인스펙터 · 모달)를
 // ASD 멀티에이전트 콘솔로 완성한다. 3컬럼 폭은 styles.css의 .app grid-template-columns가
-// 명시적으로 잡는다(84px | 1fr | 84px — 구버전 결함 1 재발 방지). 중앙 패널 본문과
-// 오른쪽 인스펙터 내용은 T4.x/T5.1이 채운다.
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
+// 명시적으로 잡는다(84px | minmax(0, 1fr) | 84px — 구버전 결함 1 재발 방지).
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type RefObject } from "react";
 import { useApp, type HarnessId, type SessionRow } from "./store";
 import SessionPanel, { Dock } from "./components/SessionRail";
 import ParticleOrb from "./components/ParticleOrb";
@@ -10,9 +9,16 @@ import Segmented from "./components/Segmented";
 import ConfirmDialog from "./components/ConfirmDialog";
 import Thread from "./components/Thread";
 import Composer from "./components/Composer";
+import PlanBoard from "./components/PlanBoard";
+import SubagentInspector from "./components/SubagentInspector";
+import TerminalPane, { type TerminalPaneHandle } from "./components/TerminalPane";
+import WorktreeDiffModal from "./components/WorktreeDiffModal";
+import RoutingConfigPanel from "./components/RoutingConfigPanel";
+import DriverBar from "./components/DriverBar";
 import { GlassDefs, useGlassLight, useLiquidRefraction } from "./lib/glass";
+import * as api from "./api.ts";
 import { baseName } from "./api.ts";
-import { FolderIcon, InfoIcon } from "./components/Icons";
+import { AgentsIcon, FolderIcon, InfoIcon, ListIcon, TerminalIcon } from "./components/Icons";
 
 const PANEL_WIDE = 1560;
 
@@ -29,20 +35,31 @@ const HARNESS_LABEL: Record<HarnessId, string> = {
 /** 첫 화면 프로젝트 카드의 색 캡슐(Elysium 톤 순환) */
 const TONES = ["tone-salmon", "tone-aqua", "tone-blush", "tone-rose"];
 
-function statusTagClass(status: string): string {
-  if (status === "done") return "tag ok";
-  if (status === "failed" || status === "merge_conflict") return "tag asd-tag-err";
-  if (status === "running" || status === "verifying" || status === "escalated") return "tag warn";
-  return "tag";
-}
-
 export default function App() {
   const app = useApp();
   useGlassLight();
   useLiquidRefraction();
   const [panel, setPanel] = useState(() => window.innerWidth >= PANEL_WIDE);
   const togglePanel = useCallback(() => setPanel((p) => !p), []);
+  const [inspectorOpen, setInspectorOpen] = useState(() => window.innerWidth >= PANEL_WIDE);
+  const toggleInspector = useCallback(() => setInspectorOpen((p) => !p), []);
   const [tab, setTab] = useState<CenterTab>("chat");
+  const terminalRef = useRef<TerminalPaneHandle | null>(null);
+
+  // 스토어의 openTerminalTab 요청을 TerminalPane ref로 연결
+  useEffect(() => {
+    app.registerTerminalOpener((params) => {
+      terminalRef.current?.openTab(params);
+    });
+    return () => app.registerTerminalOpener(null);
+  }, [app.registerTerminalOpener]);
+
+  // 작업 카드 클릭(selectedTaskId 변경) 시 오른쪽 인스펙터 자동 오픈 (구버전 결함 5 방지)
+  useEffect(() => {
+    if (app.selectedTaskId) {
+      setInspectorOpen(true);
+    }
+  }, [app.selectedTaskId]);
 
   // 도크 툴팁이 약속하는 Ctrl+N → 새 세션 화면
   useEffect(() => {
@@ -66,6 +83,11 @@ export default function App() {
   const welcomeMode =
     app.projectRoot == null ? "projects" : app.newSessionMode ? "new" : fg == null ? "empty" : null;
 
+  const subagentCount = useMemo(() => {
+    if (!fg || !app.snapshot?.subagentLogs) return 0;
+    return app.snapshot.subagentLogs.filter((l) => l.sessionId === fg.session_id).length;
+  }, [fg, app.snapshot]);
+
   return (
     <div className="app">
       <GlassDefs />
@@ -78,8 +100,12 @@ export default function App() {
         ) : (
           fg && (
             <>
-              <SessionHead fg={fg} />
-              <CenterPanel fg={fg} tab={tab} onTab={setTab} />
+              <SessionHead
+                fg={fg}
+                inspectorOpen={inspectorOpen}
+                onToggleInspector={toggleInspector}
+              />
+              <CenterPanel fg={fg} tab={tab} onTab={setTab} terminalRef={terminalRef} />
               <div className="asd-composer-row">
                 <Composer />
               </div>
@@ -87,12 +113,63 @@ export default function App() {
           )
         )}
       </main>
-      {/* 오른쪽 인스펙터 자리(임시) — T4.x가 SubagentInspector를 얹는다 */}
-      <nav className="dock tools-dock" aria-label="인스펙터 (준비 중)">
-        <button className="dock-btn" disabled aria-label="인스펙터 — T4.x에서 연결됩니다">
+
+      {/* 오른쪽 도크 + 서브에이전트 인스펙터 패널 */}
+      <nav className="dock tools-dock" aria-label="인스펙터 및 도구">
+        <button
+          type="button"
+          className={`dock-btn ${inspectorOpen ? "on" : ""}`}
+          onClick={toggleInspector}
+          data-tip="서브에이전트 인스펙터"
+          aria-label="서브에이전트 인스펙터 토글"
+          aria-expanded={inspectorOpen}
+        >
+          <AgentsIcon />
+          {subagentCount > 0 && <span className="dock-count">{subagentCount}</span>}
+        </button>
+        <button
+          type="button"
+          className={`dock-btn ${app.showWorktreeDiff ? "on" : ""}`}
+          disabled={!fg}
+          onClick={() => app.openDiff(app.selectedTaskId ?? undefined)}
+          data-tip="워크트리 Diff"
+          aria-label="워크트리 Diff 모달 열기"
+        >
+          <ListIcon />
+        </button>
+        <button
+          type="button"
+          className="dock-btn"
+          disabled={!app.projectRoot}
+          onClick={() =>
+            app.openTerminalTab({
+              title: "새 터미널",
+              cwd: app.projectRoot ?? undefined,
+            })
+          }
+          data-tip="터미널 열기"
+          aria-label="새 터미널 탭 열기"
+        >
+          <TerminalIcon />
+        </button>
+        <div className="dock-gap" />
+        <button
+          type="button"
+          className="dock-btn"
+          onClick={toggleInspector}
+          data-tip={inspectorOpen ? "인스펙터 접기" : "인스펙터 열기"}
+          aria-label="인스펙터 상태"
+        >
           <InfoIcon />
         </button>
       </nav>
+
+      <aside className={`tools-panel ${inspectorOpen && fg ? "open" : ""}`} aria-label="서브에이전트 인스펙터">
+        <SubagentInspector />
+      </aside>
+
+      <WorktreeDiffModal />
+
       {app.error && (
         <div className="toasts">
           <div className="toast error" role="alert">
@@ -116,15 +193,30 @@ function Welcome({ mode }: { mode: "projects" | "new" | "empty" }) {
   return <EmptyState />;
 }
 
-/** 프로젝트 목록 조회 → 선택(api.openProject). 폴더 입력은 T5.1까지의 임시 통로. */
+/** 프로젝트 목록 조회 → 선택(api.openProject) + 서버 폴더 탐색기(api.browseDirs) */
 function ProjectPicker() {
   const app = useApp();
   const [path, setPath] = useState("");
+  const [browsing, setBrowsing] = useState(false);
+  const [browseData, setBrowseData] = useState<api.BrowseDirsResponse | null>(null);
+
   const submit = (e: FormEvent) => {
     e.preventDefault();
     const p = path.trim();
     if (p) void app.openProject(p);
   };
+
+  const loadDir = async (dir?: string) => {
+    try {
+      const res = await api.browseDirs(dir);
+      setBrowseData(res);
+      setPath(res.currentDir);
+      setBrowsing(true);
+    } catch (e) {
+      app.reportError(api.errorText(e));
+    }
+  };
+
   return (
     <div className="thread empty asd-fill">
       <div className="welcome">
@@ -164,11 +256,56 @@ function ProjectPicker() {
               placeholder="프로젝트 폴더 경로 (예: C:\Users\me\Projects\my-app)"
               aria-label="프로젝트 폴더 경로"
             />
+            <button
+              type="button"
+              className="btn"
+              disabled={app.loading}
+              onClick={() => void loadDir(path.trim() || undefined)}
+            >
+              <FolderIcon /> 폴더 찾아보기
+            </button>
             <button type="submit" className="btn primary" disabled={app.loading || !path.trim()}>
               폴더 열기
             </button>
           </div>
-          <p className="asd-dim">폴더 선택 대화상자는 T5.1에서 연결됩니다 — 지금은 경로를 직접 입력하세요.</p>
+          {browsing && browseData && (
+            <div className="card asd-dir-browser">
+              <div className="asd-info-head" style={{ justifyContent: "space-between" }}>
+                <code>{browseData.currentDir}</code>
+                <div className="row" style={{ gap: 6 }}>
+                  {browseData.isGitRepo && <span className="tag ok">Git 저장소</span>}
+                  {browseData.parentDir && (
+                    <button
+                      type="button"
+                      className="btn sm"
+                      onClick={() => void loadDir(browseData.parentDir!)}
+                    >
+                      상위 폴더
+                    </button>
+                  )}
+                  <button type="button" className="btn sm ghost" onClick={() => setBrowsing(false)}>
+                    닫기
+                  </button>
+                </div>
+              </div>
+              <div className="asd-dir-list">
+                {browseData.directories.map((d) => {
+                  const sep = browseData.currentDir.includes("\\") ? "\\" : "/";
+                  const nextPath = `${browseData.currentDir.replace(/[\\/]+$/, "")}${sep}${d}`;
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      className="asd-dir-item"
+                      onClick={() => void loadDir(nextPath)}
+                    >
+                      <FolderIcon /> {d}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
         </form>
       </div>
     </div>
@@ -257,9 +394,17 @@ function EmptyState() {
   );
 }
 
-// ── 세션 화면: 머리 + 중앙 패널(탭 자리) ──
+// ── 세션 화면: 머리 + 중앙 패널(대화 / PLAN / Routing + 터미널) ──
 
-function SessionHead({ fg }: { fg: SessionRow }) {
+function SessionHead({
+  fg,
+  inspectorOpen,
+  onToggleInspector,
+}: {
+  fg: SessionRow;
+  inspectorOpen: boolean;
+  onToggleInspector: () => void;
+}) {
   const app = useApp();
   const busy = app.busySessions.includes(fg.session_id);
   const phaseAction =
@@ -279,7 +424,39 @@ function SessionHead({ fg }: { fg: SessionRow }) {
         <FolderIcon /> {baseName(fg.project_root)}
       </span>
       <span className="tag">{fg.phase}</span>
+      {app.selectedTaskId && (
+        <button
+          type="button"
+          className="btn sm"
+          onClick={() => app.openDiff(app.selectedTaskId ?? undefined)}
+          title="선택된 태스크의 워크트리 Diff 열기"
+        >
+          Diff: {app.selectedTaskId}
+        </button>
+      )}
       <span className="spacer" />
+      <button
+        type="button"
+        className="btn sm"
+        onClick={() => app.openDiff(app.selectedTaskId ?? undefined)}
+      >
+        Diff 보기
+      </button>
+      <button
+        type="button"
+        className="btn sm"
+        onClick={() =>
+          app.openTerminalTab({
+            title: "새 터미널",
+            cwd: fg.project_root,
+          })
+        }
+      >
+        <TerminalIcon /> 터미널
+      </button>
+      <button type="button" className="btn sm" onClick={onToggleInspector}>
+        {inspectorOpen ? "인스펙터 닫기" : "인스펙터 열기"}
+      </button>
       {phaseAction && (
         <button className="btn sm" onClick={() => void app.setPhase(fg.session_id, phaseAction.next)}>
           {phaseAction.label}
@@ -289,32 +466,34 @@ function SessionHead({ fg }: { fg: SessionRow }) {
   );
 }
 
-/** 중앙 패널: Segmented 탭 자리(대화/PLAN/Routing) + 전경 세션 정보 · PLAN 요약 플레이스홀더.
- *  실제 대화 뷰·PLAN 보드·라우팅 편집기는 T4.x/T5.1이 탭 내용을 채운다. */
-function CenterPanel({ fg, tab, onTab }: { fg: SessionRow; tab: CenterTab; onTab: (t: CenterTab) => void }) {
-  const app = useApp();
-  const tasks = useMemo(
-    () => (app.snapshot?.allTasks ?? []).filter((t) => t.session_id === fg.session_id),
-    [app.snapshot, fg.session_id],
-  );
-  const counts = useMemo(() => {
-    const m = new Map<string, number>();
-    for (const t of tasks) m.set(t.status, (m.get(t.status) ?? 0) + 1);
-    return [...m.entries()];
-  }, [tasks]);
+/** 중앙 패널: Segmented 탭(대화/PLAN/Routing) + DriverBar + 탭 본문 + TerminalPane */
+function CenterPanel({
+  fg,
+  tab,
+  onTab,
+  terminalRef,
+}: {
+  fg: SessionRow;
+  tab: CenterTab;
+  onTab: (t: CenterTab) => void;
+  terminalRef: RefObject<TerminalPaneHandle | null>;
+}) {
   return (
     <div className="asd-center">
-      <Segmented
-        as="tab"
-        label="중앙 패널 보기"
-        value={tab}
-        onChange={onTab}
-        options={[
-          { value: "chat", label: "대화" },
-          { value: "plan", label: "PLAN" },
-          { value: "routing", label: "Routing" },
-        ]}
-      />
+      <div className="asd-center-top">
+        <Segmented
+          as="tab"
+          label="중앙 패널 보기"
+          value={tab}
+          onChange={onTab}
+          options={[
+            { value: "chat", label: "대화" },
+            { value: "plan", label: "PLAN" },
+            { value: "routing", label: "Routing" },
+          ]}
+        />
+        <DriverBar />
+      </div>
       <div className={`asd-center-body${tab === "chat" ? " asd-chat-body" : ""}`}>
         <section className="card asd-info">
           <div className="asd-info-head">
@@ -325,27 +504,11 @@ function CenterPanel({ fg, tab, onTab }: { fg: SessionRow; tab: CenterTab; onTab
           <MemoRow fg={fg} />
         </section>
         {tab === "chat" && <Thread />}
-        {tab === "plan" && (
-          <section className="card asd-placeholder">
-            <b>PLAN 요약</b>
-            <div className="asd-info-head">
-              <span className="tag">전체 {tasks.length}</span>
-              {counts.map(([status, n]) => (
-                <span key={status} className={statusTagClass(status)}>
-                  {status} {n}
-                </span>
-              ))}
-            </div>
-            {tasks.length === 0 && (
-              <p className="asd-dim">아직 태스크가 없습니다 — PLAN.md 편집기와 디스패치는 T4.x에서 연결됩니다.</p>
-            )}
-          </section>
-        )}
-        {tab === "routing" && (
-          <section className="card asd-placeholder">
-            <p className="asd-dim">라우팅 편집기(routing.jsonc)는 T5.x에서 연결됩니다.</p>
-          </section>
-        )}
+        {tab === "plan" && <PlanBoard />}
+        {tab === "routing" && <RoutingConfigPanel />}
+      </div>
+      <div className="asd-terminal-slot">
+        <TerminalPane ref={terminalRef} />
       </div>
     </div>
   );
