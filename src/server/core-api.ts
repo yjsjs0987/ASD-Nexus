@@ -228,7 +228,13 @@ export async function handlePlan(
  */
 export async function handleDispatch(
   input: AsdDispatchInput,
-  ctx: { projectRoot: string; homeDir?: string; db?: SqliteDriver; signal?: AbortSignal }
+  ctx: {
+    projectRoot: string;
+    homeDir?: string;
+    db?: SqliteDriver;
+    signal?: AbortSignal;
+    commandRunner?: CommandRunner;
+  }
 ): Promise<AsdDispatchOutput> {
   const sessionId = requireExplicitSessionId(input.sessionId, "handleDispatch");
   return await rawHandleDispatch({ ...input, sessionId }, ctx);
@@ -239,7 +245,12 @@ export async function handleDispatch(
  */
 export async function handleVerify(
   input: AsdVerifyInput,
-  ctx: { projectRoot: string; homeDir?: string; db?: SqliteDriver }
+  ctx: {
+    projectRoot: string;
+    homeDir?: string;
+    db?: SqliteDriver;
+    commandRunner?: CommandRunner;
+  }
 ): Promise<AsdVerifyOutput> {
   const sessionId = requireExplicitSessionId(input.sessionId, "handleVerify");
   return await rawHandleVerify({ ...input, sessionId }, ctx);
@@ -256,6 +267,7 @@ export async function handleDebate(
     db?: SqliteDriver;
     signal?: AbortSignal;
     onProgress?: (msg: string) => void;
+    commandRunner?: CommandRunner;
   }
 ): Promise<AsdDebateOutput> {
   const sessionId = requireExplicitSessionId(input.sessionId, "handleDebate");

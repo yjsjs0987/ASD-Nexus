@@ -12,10 +12,11 @@ import {
   validateProjectRoot,
   validateSessionId,
 } from "./context.ts";
-import { ASD_VERSION } from "./core-api.ts";
+import { ASD_VERSION, type CommandRunner } from "./core-api.ts";
 import { JobRegistry } from "./jobs/job-registry.ts";
 import { handleProjectsRoutes } from "./routes/projects.ts";
 import { handleSessionsRoutes } from "./routes/sessions.ts";
+import { handleTasksRoutes } from "./routes/tasks.ts";
 import {
   collectEnrichedSnapshot,
   StateWatcher,
@@ -42,6 +43,7 @@ export interface StartGuiServerOptions {
   webDistDir?: string;
   quietReadyLog?: boolean;
   watcherDebounceMs?: number;
+  commandRunner?: CommandRunner;
 }
 
 export interface GuiServerHandle {
@@ -154,7 +156,10 @@ export async function startGuiServer(
 ): Promise<GuiServerHandle> {
   const requestedPort = options?.port ?? 4173;
   const token = generateAuthToken();
-  const context = new ServerContext({ homeDir: options?.homeDir });
+  const context = new ServerContext({
+    homeDir: options?.homeDir,
+    commandRunner: options?.commandRunner,
+  });
   const watcher = new StateWatcher(context, {
     debounceMs: options?.watcherDebounceMs,
   });
@@ -250,6 +255,19 @@ export async function startGuiServer(
 
         if (
           await handleSessionsRoutes(
+            req,
+            res,
+            parsedUrl,
+            context,
+            watcher,
+            jobRegistry
+          )
+        ) {
+          return;
+        }
+
+        if (
+          await handleTasksRoutes(
             req,
             res,
             parsedUrl,

@@ -5,7 +5,12 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { isValidAsdSessionId, openProjectDb, type SqliteDriver } from "./core-api.ts";
+import {
+  isValidAsdSessionId,
+  openProjectDb,
+  type CommandRunner,
+  type SqliteDriver,
+} from "./core-api.ts";
 import type { ErrorCode } from "../shared/protocol.ts";
 
 export class HttpApiError extends Error {
@@ -102,14 +107,16 @@ export function validateSubPath(projectRoot: string, targetCwd: unknown): string
 
 export class ServerContext {
   readonly homeDir: string;
+  readonly commandRunner?: CommandRunner;
   private readonly dbCache = new Map<string, SqliteDriver>();
 
-  constructor(options?: { homeDir?: string }) {
+  constructor(options?: { homeDir?: string; commandRunner?: CommandRunner }) {
     this.homeDir = options?.homeDir
       ? path.resolve(options.homeDir)
       : process.env.ASD_HOME_DIR
         ? path.resolve(process.env.ASD_HOME_DIR)
         : os.homedir();
+    this.commandRunner = options?.commandRunner;
   }
 
   getDb(projectRoot: string): SqliteDriver {

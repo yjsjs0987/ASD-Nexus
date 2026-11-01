@@ -248,6 +248,7 @@ export async function handleSessionsRoutes(
             homeDir: context.homeDir,
             signal,
             onProgress: (msg) => emitProgress(msg),
+            commandRunner: context.commandRunner,
           }
         );
         await watcher.forceBroadcastProject(projectRoot);
@@ -327,6 +328,7 @@ export async function handleSessionsRoutes(
           harness: body.harness,
           model: body.model,
           waitForCompletion: true,
+          commandRunner: context.commandRunner,
         });
         await watcher.forceBroadcastProject(projectRoot);
         return actionRes;
