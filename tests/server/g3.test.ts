@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { DatabaseSync } from "node:sqlite";
 import { execSync } from "node:child_process";
 import WebSocket from "ws";
 import { startGuiServer } from "../../src/server/index.ts";
@@ -147,6 +148,55 @@ test("G3 — PTY Manager (spawn, I/O, resize, reconnect, closeTabsInPath, securi
       !trBody.messages[1]!.text.includes("sk-ant-api03-1234567890abcdefghijklmnop"),
       "Transcript output must be secret-redacted"
     );
+
+    // 2b. Verify OpenCode ses_... session reads assistant turns from opencode.db even when .claude/transcripts/ses_*.jsonl only has user turns
+    const ocDbDir = path.join(tempHome, ".local", "share", "opencode");
+    fs.mkdirSync(ocDbDir, { recursive: true });
+    const ocDbPath = path.join(ocDbDir, "opencode.db");
+    const ocDb = new DatabaseSync(ocDbPath);
+    ocDb.exec(`
+      CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+      CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+    `);
+    ocDb
+      .prepare("INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)")
+      .run("msg_u1", "ses_mock123", 1000, JSON.stringify({ role: "user" }));
+    ocDb
+      .prepare("INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)")
+      .run("prt_u1", "msg_u1", "ses_mock123", 1000, JSON.stringify({ type: "text", text: "OpenCode 질문입니다" }));
+    ocDb
+      .prepare("INSERT INTO message (id, session_id, time_created, data) VALUES (?, ?, ?, ?)")
+      .run("msg_a1", "ses_mock123", 2000, JSON.stringify({ role: "assistant" }));
+    ocDb
+      .prepare("INSERT INTO part (id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)")
+      .run("prt_a1", "msg_a1", "ses_mock123", 2000, JSON.stringify({ type: "text", text: "OpenCode AI 응답입니다" }));
+    ocDb.close();
+
+    const hookDir = path.join(tempHome, ".claude", "transcripts");
+    fs.mkdirSync(hookDir, { recursive: true });
+    const hookSesPath = path.join(hookDir, "ses_mock123.jsonl");
+    fs.writeFileSync(
+      hookSesPath,
+      JSON.stringify({ type: "user", content: "OpenCode 질문입니다" }) + "\n",
+      "utf-8"
+    );
+
+    const ocTrRes = await fetch(
+      `http://127.0.0.1:${gui.port}/api/transcripts?projectRoot=${encodeURIComponent(
+        projectRoot
+      )}&harness=claude-code&harnessSessionId=ses_mock123&transcriptPath=${encodeURIComponent(
+        hookSesPath
+      )}`,
+      { headers }
+    );
+    assert.equal(ocTrRes.status, 200);
+    const ocTrBody = (await ocTrRes.json()) as GetTranscriptResponse;
+    assert.equal(ocTrBody.found, true);
+    assert.equal(ocTrBody.harness, "opencode");
+    assert.equal(ocTrBody.messages.length, 2);
+    assert.equal(ocTrBody.messages[0]?.role, "user");
+    assert.equal(ocTrBody.messages[1]?.role, "assistant");
+    assert.equal(ocTrBody.messages[1]?.text, "OpenCode AI 응답입니다");
 
     // 3. Connect WS and spawn PTY with asDriverOf env injection
     const ws = new WebSocket(`ws://127.0.0.1:${gui.port}/ws`, {

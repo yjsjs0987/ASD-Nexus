@@ -257,6 +257,7 @@ export interface DriverPromptRequest {
   sessionId: string;
   prompt: string;
   mode?: "chat" | "plan";
+  driverId?: string;
 }
 
 export interface DriverPromptResponse {

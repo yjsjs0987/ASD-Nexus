@@ -28,6 +28,7 @@ import { readJsonBody, sendJson } from "../index.ts";
 import type { JobRegistry } from "../jobs/job-registry.ts";
 import {
   collectEnrichedSnapshot,
+  setRememberedForegroundSessionId,
   type StateWatcher,
 } from "../watcher/state-watcher.ts";
 import type {
@@ -98,6 +99,7 @@ export async function handleSessionsRoutes(
 
     if (makeForeground) {
       setForegroundSession({ db, projectRoot, sessionId });
+      setRememberedForegroundSessionId(projectRoot, sessionId);
     } else {
       syncSessionDriversToMainJson(db, projectRoot, sessionId);
     }
@@ -116,7 +118,11 @@ export async function handleSessionsRoutes(
   if (req.method === "POST" && pathname === "/api/sessions/memo") {
     const body = await readJsonBody<SaveSessionMemoRequest>(req);
     const projectRoot = validateProjectRoot(body.projectRoot);
-    const sessionId = validateSessionId(body.sessionId);
+    const rawSid = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+    const splitIdx = rawSid.indexOf("::");
+    const baseSid = splitIdx !== -1 ? rawSid.slice(0, splitIdx) : rawSid;
+    validateSessionId(baseSid);
+    const sessionId = rawSid;
     const memo = typeof body.memo === "string" ? body.memo.trim() : "";
 
     saveSessionMemo({
@@ -134,7 +140,8 @@ export async function handleSessionsRoutes(
   if (req.method === "POST" && pathname === "/api/sessions/foreground") {
     const body = await readJsonBody<SetForegroundSessionRequest>(req);
     const projectRoot = validateProjectRoot(body.projectRoot);
-    const sessionId = validateSessionId(body.sessionId);
+    const rawSid = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+    const sessionId = validateSessionId(rawSid);
     const db = context.getDb(projectRoot);
     if (!db.getSession(sessionId)) {
       throw new HttpApiError(404, "NOT_FOUND", `Session not found: ${sessionId}`);
@@ -146,10 +153,11 @@ export async function handleSessionsRoutes(
       sessionId,
       planMdPath: paths.planMdPath,
     });
+    setRememberedForegroundSessionId(projectRoot, rawSid);
     await watcher.forceBroadcastProject(projectRoot);
     const response: SetForegroundSessionResponse = {
       ok: true,
-      sessionId,
+      sessionId: rawSid,
       planMdPath: paths.planMdPath,
     };
     sendJson(res, 200, response);

@@ -364,7 +364,7 @@ input[type="text"].model-input { font-family: var(--mono); font-size: 12px; }
 
 /* ---------- 정렬 · 균형(2026-10-17) ----------
    세션 머리·결과 카드·입력창이 같은 기준선(--col)에 서고, 컨트롤 높이는 32px로 맞춘다. 대화 폭은 1040px까지 넓다. */
-:root { --col: min(1040px, calc(100% - 56px)); --ctl: 32px; }
+:root { --col: min(2400px, calc(100% - 48px)); --ctl: 32px; }
 .session-head { width: var(--col); margin: 0 auto; padding: 18px 0 10px; min-height: 64px; }
 .thread-inner { width: var(--col); max-width: none; margin: 0 auto; padding: 4px 0 28px; }
 .composer-wrap { width: var(--col); }
@@ -393,7 +393,7 @@ input[type="text"].rail-search { height: 36px; margin-top: 10px; }
 .session { padding: 11px 13px; border-radius: 14px; }
 .rail-foot { gap: 4px; }
 .rail-link { height: 38px; padding: 0 10px; }
-.welcome { width: var(--col); padding: 0 0 24px; }
+.welcome { width: min(920px, var(--col)); padding: 0 0 24px; }
 .welcome-cards { gap: 12px; }
 .welcome-cards button { align-content: start; min-height: 84px; }
 
@@ -1203,8 +1203,81 @@ body { background-image: var(--vignette), var(--horizon), var(--sky); background
 /* ── Diff 모달 · 라우팅 편집기 · 드라이버 바 · 폴더 탐색기(T5.1) ────────────────────────────── */
 .asd-center { grid-template-rows: auto minmax(0, 1fr) auto; }
 .asd-center-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; min-width: 0; }
-.asd-terminal-slot { min-height: 0; max-height: 280px; border-radius: 16px; overflow: hidden; }
+.asd-terminal-slot { min-height: 0; max-height: 82vh; border-radius: 16px; overflow: hidden; }
 .asd-terminal-slot:empty { display: none; }
+
+/* ── v2.3.1 대시보드 패리티 & 결함 수정 확장 스타일 ────────────────────────────── */
+.head-folder { cursor: pointer; display: inline-flex; align-items: center; gap: 6px; font: inherit; color: var(--ink); }
+
+/* 검색형 모델 선택기(ModelPicker) */
+.asd-model-picker { position: relative; display: inline-flex; min-width: 170px; }
+.asd-model-picker.compact { min-width: 150px; }
+.asd-mp-btn { width: 100%; height: var(--ctl); padding: 0 11px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--glass-ctl); color: var(--ink); font-size: 12.5px; display: inline-flex; align-items: center; justify-content: space-between; gap: 8px; cursor: pointer; text-align: left; }
+.asd-model-picker.compact .asd-mp-btn { height: 32px; font-size: 12px; }
+.asd-mp-btn:hover:not(:disabled) { border-color: var(--accent-2); background: var(--glass-ctl-hi); }
+.asd-mp-btn:disabled { opacity: 0.5; cursor: default; }
+.asd-mp-label, .asd-mp-val { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); }
+.asd-mp-val.placeholder { color: var(--dim); font-family: inherit; }
+.asd-mp-count { font-size: 10.5px; padding: 1px 6px; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-family: var(--mono); flex: none; }
+.asd-mp-caret { font-size: 11px; color: var(--dim); flex: none; }
+.asd-mp-empty { padding: 8px 10px; font-size: 12px; color: var(--dim); }
+.asd-mp-item.selected { background: rgba(var(--accent-rgb), 0.16); color: var(--accent-ink); font-weight: 600; }
+.asd-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.asd-modal-head h3 { margin: 0; font-size: 16px; }
+.asd-harness-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.asd-harness-path { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asd-model-pill { cursor: pointer; }
+.asd-model-pill:hover { border-color: var(--accent-2); color: var(--accent); }
+.asd-mp-pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 60; width: min(340px, 86vw); padding: 10px; border-radius: 14px; background: var(--pop, var(--card)); border: 1px solid var(--line-2); box-shadow: 0 18px 44px rgba(0, 0, 0, 0.48); display: grid; gap: 8px; animation: pop 0.18s var(--spring) backwards; }
+.asd-mp-search { width: 100%; height: 32px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line-2); background: var(--surface-2); color: var(--ink); font-size: 12.5px; outline: none; }
+.asd-mp-search:focus { border-color: var(--accent); }
+.asd-mp-list { display: grid; gap: 3px; max-height: 240px; overflow-y: auto; scrollbar-width: thin; }
+.asd-mp-item { display: flex; align-items: center; justify-content: space-between; gap: 8px; width: 100%; padding: 6px 10px; border-radius: 8px; border: none; background: transparent; color: var(--ink); font-family: var(--mono); font-size: 12px; text-align: left; cursor: pointer; }
+.asd-mp-item:hover { background: var(--hover-veil); }
+.asd-mp-item.active { background: rgba(var(--accent-rgb), 0.16); color: var(--accent-ink); font-weight: 600; }
+.asd-mp-item.custom { color: var(--accent); }
+.asd-mp-item code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; background: transparent; padding: 0; }
+.asd-mp-check { color: var(--accent); font-weight: 700; }
+
+/* 하네스 및 모델 모달(HarnessModelsModal) */
+.asd-harness-modal { width: min(940px, calc(100vw - 36px)); max-height: calc(100vh - 48px); padding: 20px 24px 18px !important; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; }
+.asd-harness-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+@media (max-width: 720px) { .asd-harness-grid { grid-template-columns: 1fr; } }
+.asd-harness-card { padding: 14px 16px; border-radius: 14px; border: 1px solid var(--line); background: var(--surface); display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.asd-harness-card.installed { border-color: rgba(var(--hl-rgb), 0.35); }
+.asd-harness-card.missing { opacity: 0.72; }
+.asd-harness-models-box { margin-top: 6px; max-height: 150px; overflow-y: auto; padding: 8px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--line); display: flex; flex-wrap: wrap; gap: 5px; align-content: flex-start; scrollbar-width: thin; }
+.asd-model-pill { font-size: 11px; padding: 2px 7px; border-radius: 6px; background: var(--card); border: 1px solid var(--line); color: var(--ink); }
+
+/* 세션 레일 섹션(ASD 세션 vs 일반 CLI 세션) */
+.rail-sec-label { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px 4px; font-size: 11px; font-weight: 700; color: var(--dim); text-transform: uppercase; letter-spacing: 0.04em; }
+.rail-chip { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: var(--surface-2); color: var(--muted); font-family: var(--mono); }
+.cli-session-actions { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.btn.xs { height: 22px; padding: 0 7px; font-size: 11px; border-radius: 6px; }
+
+/* 대화 스레드(Thread.tsx) */
+.asd-tx-toolbar { position: sticky; top: 0; z-index: 4; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 8px 12px; margin-bottom: 10px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); }
+.asd-msg-card { padding: 12px 16px; margin-bottom: 10px; border-radius: 18px; }
+.asd-msg-user { background: linear-gradient(180deg, rgba(var(--accent2-rgb), 0.1), transparent), var(--content); border-color: rgba(var(--accent2-rgb), 0.25); }
+.asd-user-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13.5px; line-height: 1.6; color: var(--ink); padding-top: 4px; }
+
+/* PLAN 보드 KPI 진행률 바 & 적대적 토론 카드 */
+.asd-kpi-card { padding: 14px 18px; display: grid; gap: 10px; }
+.asd-progress-track { width: 100%; height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+.asd-progress-fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--accent), var(--hl)); transition: width 0.35s var(--ease); }
+.asd-debate-card { padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); cursor: pointer; transition: border-color 0.2s, background 0.2s; }
+.asd-debate-card:hover { border-color: var(--accent-2); background: var(--card); }
+.asd-debate-card.selected { border-color: var(--accent); background: rgba(var(--accent-rgb), 0.08); }
+
+/* 서브에이전트 인스펙터 메타데이터 & 프롬프트 상세 */
+.asd-inspector-meta { padding: 10px 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); display: grid; gap: 6px; }
+.asd-prompt-details { margin-top: 4px; padding: 6px 10px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--line); }
+
+/* 터미널 상단 드래그 리사이즈 핸들 */
+.asd-terminal-resizer { height: 6px; cursor: ns-resize; background: var(--surface-2); border-bottom: 1px solid var(--line); display: grid; place-items: center; user-select: none; flex-shrink: 0; }
+.asd-terminal-resizer:hover { background: rgba(var(--accent-rgb), 0.22); }
+.asd-terminal-resizer-grip { width: 38px; height: 2px; border-radius: 2px; background: var(--dim); }
+.app { grid-template-rows: minmax(0, 1fr); overflow: hidden; }
 
 .asd-driver-bar { flex: 1; min-width: 280px; display: grid; gap: 8px; padding: 6px 12px; border-radius: 14px; background: var(--surface); border: 1px solid var(--line); }
 .asd-driver-bar-main { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
@@ -1245,6 +1318,96 @@ body { background-image: var(--vignette), var(--horizon), var(--sky); background
 .asd-dir-item { display: flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 9px; border: 1px solid var(--line); background: var(--surface-2); font-size: 12.5px; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .asd-dir-item:hover { border-color: var(--accent-2); background: var(--card); }
 
+.asd-chat-body { grid-template-rows: minmax(0, 1fr); }
 .asd-chat-body > .asd-fill { grid-row: auto; min-height: 0; overflow-y: auto; }
 .asd-chat-body .orb-anchor { width: 110px; height: 110px; }
 .app { grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+
+/* ── 전체화면 반응형 대화 폭 & 사이드바 여백 & 사고 과정(Thinking) 접기 ── */
+.asd-center .thread-inner {
+  width: 100%;
+  max-width: none;
+  padding: 4px 2px 28px;
+}
+.main {
+  transition: padding-left 0.35s var(--ease), padding-right 0.35s var(--ease);
+}
+@media (min-width: 1180px) {
+  .app.panel-is-open .main { padding-left: 300px; }
+  .app.inspector-is-open .main { padding-right: 332px; }
+}
+
+.asd-assistant-body {
+  display: grid;
+  gap: 10px;
+}
+.asd-thinking-box {
+  border-radius: 12px;
+  border: 1px solid rgba(var(--accent-rgb), 0.24);
+  background: rgba(var(--accent-rgb), 0.05);
+  overflow: hidden;
+  transition: border-color 0.2s, background 0.2s;
+}
+.asd-thinking-box.open {
+  border-color: rgba(var(--accent-rgb), 0.42);
+  background: rgba(var(--accent-rgb), 0.08);
+}
+.asd-thinking-head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.asd-thinking-head:hover {
+  background: var(--hover-veil);
+}
+.asd-thinking-badge {
+  flex: none;
+  font-weight: 700;
+  color: var(--accent-ink);
+}
+.asd-thinking-meta {
+  flex: none;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: var(--dim);
+  background: var(--surface-2);
+  padding: 1px 6px;
+  border-radius: 999px;
+}
+.asd-thinking-preview {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 12px;
+}
+.asd-thinking-toggle {
+  margin-left: auto;
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.asd-thinking-body {
+  padding: 8px 14px 10px;
+  border-top: 1px dashed rgba(var(--accent-rgb), 0.22);
+  font-size: 12.5px;
+  color: var(--muted);
+  max-height: 440px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+.asd-driver-history-item.viewing {
+  background: rgba(var(--accent-rgb), 0.12);
+  border: 1px solid rgba(var(--accent-rgb), 0.35);
+}

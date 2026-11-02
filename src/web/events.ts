@@ -87,18 +87,12 @@ function useWsSubscription(
   onMessage: (msg: ServerWsMessage) => void,
   deps: unknown[] = []
 ): SubscriptionHandle {
-  const clientRef = useRef<WsClient | null>(null);
   const handlerRef = useRef(onMessage);
   handlerRef.current = onMessage;
 
-  // Initialize client once
-  useEffect(() => {
-    clientRef.current = getWsClient();
-  }, []);
-
   const subscribe = useCallback(
     (projectRoot: string) => {
-      clientRef.current?.subscribeProject(projectRoot);
+      getWsClient().subscribeProject(projectRoot);
     },
     []
   );
@@ -111,9 +105,7 @@ function useWsSubscription(
 
   // Register message handler
   useEffect(() => {
-    const client = clientRef.current;
-    if (!client) return;
-
+    const client = getWsClient();
     const unsubscribeHandler = client.onMessage((msg) => {
       handlerRef.current(msg);
     });

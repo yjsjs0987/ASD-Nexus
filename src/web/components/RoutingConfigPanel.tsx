@@ -5,6 +5,7 @@ import { useApp } from "../store";
 import * as api from "../api.ts";
 import type { GetProjectRoutingResponse, HarnessId } from "../../shared/protocol.ts";
 import { RefreshIcon, SaveIcon, PlusIcon, TrashIcon } from "./Icons";
+import { ModelPicker } from "./ModelPicker.tsx";
 
 type RoutingConfig = GetProjectRoutingResponse["config"];
 type AgentMap = RoutingConfig["agents"];
@@ -65,7 +66,6 @@ function RouteEntryRow({
 }) {
   const current = entry ?? defaultRouteEntry();
   const harnessModels = catalog[current.harness] ?? [];
-  const datalistId = `models-${badge}-${label.replace(/[^a-zA-Z0-9_-]/g, "_")}`;
 
   const handleHarnessChange = (nextHarness: HarnessId) => {
     const candidateModels = catalog[nextHarness] ?? [];
@@ -115,20 +115,13 @@ function RouteEntryRow({
           ))}
         </select>
         <div className="asd-routing-model-wrap">
-          <input
-            type="text"
-            className="asd-input"
-            list={datalistId}
+          <ModelPicker
+            harness={current.harness}
             value={current.model}
-            onChange={(e) => handleModelChange(e.target.value)}
-            placeholder="모델 ID 입력 또는 선택"
-            aria-label={`${label} 모델`}
+            models={harnessModels}
+            onChange={handleModelChange}
+            ariaLabel={`${label} 모델`}
           />
-          <datalist id={datalistId}>
-            {harnessModels.map((m) => (
-              <option key={m} value={m} />
-            ))}
-          </datalist>
         </div>
         <select
           className="asd-select"

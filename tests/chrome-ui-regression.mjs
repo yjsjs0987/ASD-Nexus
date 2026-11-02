@@ -232,6 +232,7 @@ async function main() {
 
     // Verify Chat tab (default after opening project with foreground session)
     const chatCheck = await cdp.eval(`(() => {
+      const logoImg = document.querySelector('.dock-logo img');
       return {
         h1: document.querySelector('h1')?.textContent?.trim() ?? '',
         toast: document.querySelector('.toast')?.textContent?.trim() ?? '',
@@ -239,11 +240,58 @@ async function main() {
         hasDriverBar: !!document.querySelector('.asd-driver-bar'),
         hasThread: !!document.querySelector('.thread'),
         hasComposer: !!document.querySelector('.composer'),
+        logoLoaded: !!(logoImg && logoImg.complete && logoImg.naturalWidth > 0),
         scrollWidth: document.documentElement.scrollWidth,
         scrollHeight: document.documentElement.scrollHeight,
       };
     })()`);
-    console.log("2. Chat Tab & DriverBar Check:", chatCheck);
+    console.log("2. Chat Tab, Logo & DriverBar Check:", chatCheck);
+
+    // 2b. Verify HarnessModelsModal & ModelPicker
+    await cdp.eval(`(() => {
+      const btn = [...document.querySelectorAll('.session-head button')].find(b => b.textContent.includes('하네스·모델'));
+      if (!btn) throw new Error("Harness modal button not found");
+      btn.click();
+    })()`);
+    await sleep(600);
+    const harnessModalCheck = await cdp.eval(`(() => {
+      const modal = document.querySelector('.asd-harness-modal');
+      const cards = [...document.querySelectorAll('.asd-harness-card')];
+      const pills = [...document.querySelectorAll('.asd-model-pill')];
+      const closeBtn = [...(modal?.querySelectorAll('button') ?? [])].find(b => b.textContent.trim() === '닫기');
+      if (closeBtn) closeBtn.click();
+      return {
+        modalOpen: !!modal,
+        harnessCardCount: cards.length,
+        totalModelPills: pills.length,
+      };
+    })()`);
+    console.log("2b. HarnessModelsModal Check:", harnessModalCheck);
+    await sleep(300);
+
+    // 2c. Verify Session Switching in SessionRail (switch away and then ensure Elysium session is active for Step 3)
+    await cdp.eval(`(() => {
+      const panelToggle = document.querySelector('.dock button[aria-label="세션 목록"]');
+      const panelOpen = document.querySelector('.panel.open');
+      if (!panelOpen && panelToggle) panelToggle.click();
+    })()`);
+    await sleep(400);
+    const sessionSwitchCheck = await cdp.eval(`(async () => {
+      const beforeTitle = document.querySelector('.session-head .head-title')?.textContent?.trim() ?? '';
+      const otherBtn = [...document.querySelectorAll('.sessions .session:not(.cli-session):not(.on)')][0];
+      if (!otherBtn) return { switched: true, beforeTitle, afterTitle: beforeTitle };
+      otherBtn.click();
+      await new Promise(r => setTimeout(r, 500));
+      const midTitle = document.querySelector('.session-head .head-title')?.textContent?.trim() ?? '';
+      const elysiumBtn = [...document.querySelectorAll('.sessions .session:not(.cli-session)')].find(el => el.textContent.includes('Elysium'));
+      if (elysiumBtn && !elysiumBtn.classList.contains('on')) {
+        elysiumBtn.click();
+        await new Promise(r => setTimeout(r, 500));
+      }
+      const afterTitle = document.querySelector('.session-head .head-title')?.textContent?.trim() ?? '';
+      return { switched: beforeTitle !== midTitle, beforeTitle, midTitle, afterTitle };
+    })()`);
+    console.log("2c. Session Switch Check:", sessionSwitchCheck);
 
     // 3. Switch to PLAN tab -> verify PLAN.md editor + click task card -> verify SubagentInspector updates
     await cdp.eval(`(() => {
@@ -296,8 +344,8 @@ async function main() {
 
     // 5. Open WorktreeDiffModal -> check diff modal & 409 notice -> close
     await cdp.eval(`(() => {
-      const buttons = [...document.querySelectorAll('.session-head button')];
-      const diffBtn = buttons.find(b => b.textContent.includes('Diff 보기'));
+      const diffBtn = document.querySelector('.tools-dock button[aria-label="워크트리 Diff 모달 열기"]')
+        || [...document.querySelectorAll('.session-head button')].find(b => b.textContent.includes('Diff'));
       if (!diffBtn) throw new Error("Diff button not found");
       diffBtn.click();
     })()`);
@@ -320,10 +368,9 @@ async function main() {
     })()`);
     await sleep(400);
 
-    // 6. Open TerminalPane -> verify xterm container mounts
+    // 6. Open TerminalPane -> verify xterm container mounts & resize works
     await cdp.eval(`(() => {
-      const buttons = [...document.querySelectorAll('.session-head button')];
-      const termBtn = buttons.find(b => b.textContent.includes('터미널'));
+      const termBtn = document.querySelector('.tools-dock button[aria-label="새 터미널 탭 열기"]');
       if (!termBtn) throw new Error("Terminal button not found");
       termBtn.click();
     })()`);

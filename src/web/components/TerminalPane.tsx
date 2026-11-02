@@ -46,8 +46,35 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
   const [tabs, setTabs] = useState<TerminalTab[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
   const [showTerminal, setShowTerminal] = useState(false);
+  const [paneHeight, setPaneHeight] = useState<number>(300);
+  const [maximized, setMaximized] = useState<boolean>(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRefs = useRef<Map<string, MountedTerm>>(new Map());
+
+  const startResizeDrag = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      e.preventDefault();
+      const startY = e.clientY;
+      const startH = maximized
+        ? Math.round(window.innerHeight * 0.72)
+        : paneHeight;
+      setMaximized(false);
+
+      const onMove = (ev: MouseEvent) => {
+        const delta = startY - ev.clientY;
+        const maxH = Math.max(320, Math.round(window.innerHeight * 0.8));
+        const next = Math.min(maxH, Math.max(180, startH + delta));
+        setPaneHeight(next);
+      };
+      const onUp = () => {
+        window.removeEventListener("mousemove", onMove);
+        window.removeEventListener("mouseup", onUp);
+      };
+      window.addEventListener("mousemove", onMove);
+      window.addEventListener("mouseup", onUp);
+    },
+    [maximized, paneHeight],
+  );
   const tabsRef = useRef<TerminalTab[]>([]);
   tabsRef.current = tabs;
   const wsClient = getWsClient();
@@ -216,6 +243,21 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
     termRefs.current.set(activeTabId, { term, fit, element, dispose });
   }, [activeTabId, projectRoot, ptyInput, ptyResize, wsClient]);
 
+  useEffect(() => {
+    if (!activeTabId) return;
+    const mounted = termRefs.current.get(activeTabId);
+    if (!mounted) return;
+    try {
+      mounted.fit.fit();
+      const { cols, rows } = mounted.term;
+      if (cols > 0 && rows > 0) {
+        ptyResize(activeTabId, cols, rows);
+      }
+    } catch {
+      // ignore fit errors when hidden
+    }
+  }, [paneHeight, maximized, activeTabId, ptyResize]);
+
   // 언마운트 시 전체 정리
   useEffect(() => {
     const map = termRefs.current;
@@ -263,15 +305,31 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
     }
   }, [projectRoot, fgId, ptyKill]);
 
-  if (!showTerminal && tabs.length === 0) {
+  if (!showTerminal) {
     return null;
   }
+
+  const effectiveHeight = maximized ? "72vh" : `${paneHeight}px`;
 
   return (
     <div
       className="asd-terminal-pane"
-      style={{ display: "flex", flexDirection: "column", height: "230px", minHeight: 0 }}
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        height: effectiveHeight,
+        minHeight: "180px",
+        maxHeight: "82vh",
+      }}
     >
+      {/* 상단 드래그 리사이즈 핸들 */}
+      <div
+        className="asd-terminal-resizer"
+        onMouseDown={startResizeDrag}
+        title="드래그하여 터미널 창 높이 조절"
+        role="separator"
+        aria-orientation="horizontal"
+      />
       {/* 탭 바 */}
       <div
         className="asd-terminal-tabs"
@@ -357,11 +415,37 @@ const TerminalPane = forwardRef<TerminalPaneHandle, TerminalPaneProps>((props, r
         <button
           type="button"
           className="btn sm ghost"
+          onClick={() => {
+            setMaximized(false);
+            setPaneHeight((h) => (h < 440 ? 480 : 280));
+          }}
+          title="터미널 높이 크게/기본 전환"
+        >
+          {paneHeight >= 440 && !maximized ? "기본 크기" : "크게"}
+        </button>
+        <button
+          type="button"
+          className="btn sm ghost"
+          onClick={() => setMaximized((m) => !m)}
+          title="터미널 최대화/복원"
+        >
+          {maximized ? "복원" : "최대화"}
+        </button>
+        <button
+          type="button"
+          className="btn sm ghost"
           onClick={() => createTab({ title: "새 터미널", cwd: projectRoot ?? undefined })}
           disabled={!projectRoot}
-          style={{ marginRight: 4 }}
         >
           <TerminalIcon size={14} /> 새 탭
+        </button>
+        <button
+          type="button"
+          className="btn sm ghost"
+          onClick={() => setShowTerminal(false)}
+          title="터미널 창 접기"
+        >
+          접기
         </button>
       </div>
 

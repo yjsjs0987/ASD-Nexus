@@ -69,9 +69,26 @@ export class WsClient {
     };
   }
 
+  /** Update callbacks/options on an existing singleton instance without dropping handlers. */
+  updateOptions(options: WsClientOptions): void {
+    if (options.projectRoot !== undefined) this.opts.projectRoot = options.projectRoot;
+    if (options.onOpen) this.opts.onOpen = options.onOpen;
+    if (options.onClose) this.opts.onClose = options.onClose;
+    if (options.onMessage) this.opts.onMessage = options.onMessage;
+    if (options.onError) this.opts.onError = options.onError;
+    if (options.onReconnecting) this.opts.onReconnecting = options.onReconnecting;
+    if (options.onStateSynced) this.opts.onStateSynced = options.onStateSynced;
+  }
+
   /** Connect to /ws (same origin). Call once at app startup. */
   connect(): void {
-    if (this.ws?.readyState === WebSocket.OPEN) return;
+    if (
+      this.ws &&
+      (this.ws.readyState === WebSocket.OPEN ||
+        this.ws.readyState === WebSocket.CONNECTING)
+    ) {
+      return;
+    }
     this.intentionalClose = false;
 
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
@@ -267,7 +284,11 @@ export function getWsClient(): WsClient {
 }
 
 export function initWsClient(options: WsClientOptions): WsClient {
-  wsClientInstance = new WsClient(options);
+  if (!wsClientInstance) {
+    wsClientInstance = new WsClient(options);
+  } else {
+    wsClientInstance.updateOptions(options);
+  }
   return wsClientInstance;
 }
 

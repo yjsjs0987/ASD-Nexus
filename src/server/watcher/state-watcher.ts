@@ -12,8 +12,11 @@
  * 6. Runs a 2-second lightweight DB digest poll per subscribed project for Windows WAL reliability.
  */
 
+import * as child_process from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import type { WebSocket } from "ws";
 import {
   collectDashboardSnapshot,
@@ -21,8 +24,13 @@ import {
   getForegroundSessionId,
   recoverOrphanedTasks,
   resolveAsdPaths,
+  resolveSpawnCommand,
   runGit,
+  type CliRecentSessionEntry,
   type DashboardSnapshot,
+  type DriverRow,
+  type HarnessId,
+  type HarnessModelCatalog,
   type TaskStatus,
 } from "../core-api.ts";
 import type { ServerContext } from "../context.ts";
@@ -63,16 +71,558 @@ export function getProjectGitInfo(projectRoot: string): {
   }
 }
 
+const STANDARD_HARNESS_MODELS: Record<HarnessId, string[]> = {
+  "claude-code": [
+    "claude-sonnet-4-6",
+    "claude-opus-4-6",
+    "claude-sonnet-4-5",
+    "claude-opus-4-5",
+    "claude-haiku-4-5",
+    "sonnet",
+    "opus",
+    "haiku",
+  ],
+  codex: [
+    "gpt-5.4",
+    "gpt-5.4-mini",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.2",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
+  ],
+  opencode: [
+    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-opus-4-6",
+    "openai/gpt-5.4",
+    "openai/gpt-5.3-codex",
+    "google/gemini-2.5-pro",
+    "google/gemini-2.5-flash",
+  ],
+  antigravity: [
+    "gemini-4-argon-medium",
+    "gemini-4-argon-high",
+    "gemini-4-argon-low",
+    "gemini-3.8-flash-high",
+    "gemini-3.8-flash-medium",
+    "gemini-3.8-flash-low",
+    "claude-opus-5-5-high",
+    "claude-opus-5-5-medium",
+    "claude-opus-5-5-low",
+    "claude-sonnet-5-5-high",
+    "claude-sonnet-5-5-medium",
+    "claude-sonnet-5-5-low",
+    "gpt-oss-120b-medium",
+  ],
+  cursor: [
+    "auto",
+    "composer-2",
+    "claude-sonnet-4.6",
+    "claude-opus-4.6",
+    "gpt-5.4",
+    "gemini-2.5-pro",
+  ],
+};
+
+const asyncCliModelsCache: Record<HarnessId, Set<string>> = {
+  "claude-code": new Set<string>(),
+  codex: new Set<string>(),
+  opencode: new Set<string>(),
+  antigravity: new Set<string>(),
+  cursor: new Set<string>(),
+};
+let asyncCliScanInFlight: Promise<void> | null = null;
+let asyncCliScanCompleted = false;
+
+function runCliLinesAsync(bin: string, args: string[], timeoutMs = 4500): Promise<string[]> {
+  return new Promise((resolve) => {
+    try {
+      const resolved = resolveSpawnCommand(bin, args);
+      const child = child_process.spawn(resolved.command, resolved.args, {
+        windowsHide: true,
+        shell: resolved.shell,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      let stdout = "";
+      const timer = setTimeout(() => {
+        try {
+          child.kill();
+        } catch {}
+        resolve([]);
+      }, timeoutMs);
+      child.stdout?.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString("utf8");
+      });
+      child.on("error", () => {
+        clearTimeout(timer);
+        resolve([]);
+      });
+      child.on("close", () => {
+        clearTimeout(timer);
+        resolve(stdout.split(/\r?\n/));
+      });
+    } catch {
+      resolve([]);
+    }
+  });
+}
+
+export async function refreshAsyncCliModels(): Promise<void> {
+  if (asyncCliScanInFlight) return asyncCliScanInFlight;
+  asyncCliScanInFlight = (async () => {
+    const [agyLines, opencodeLines] = await Promise.all([
+      runCliLinesAsync("agy", ["models"]),
+      runCliLinesAsync("opencode", ["models"]),
+    ]);
+    for (const rawLine of agyLines) {
+      const line = rawLine.trim();
+      if (!line || line.startsWith("Fetching")) continue;
+      const firstCol = line.split("\t")[0]?.trim();
+      if (firstCol && !firstCol.includes(" ")) {
+        asyncCliModelsCache.antigravity.add(firstCol);
+      }
+    }
+    for (const rawLine of opencodeLines) {
+      const line = rawLine.trim();
+      if (
+        line &&
+        line.includes("/") &&
+        !line.startsWith("INFO") &&
+        !line.startsWith("WARN") &&
+        !line.includes(" ")
+      ) {
+        asyncCliModelsCache.opencode.add(line);
+      }
+    }
+    asyncCliScanCompleted = true;
+  })().finally(() => {
+    asyncCliScanInFlight = null;
+  });
+  return asyncCliScanInFlight;
+}
+
+function normalizeModelId(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "";
+  if (trimmed.includes(" ")) {
+    // Convert UI display name like "Gemini 4 Argon (Medium)" -> "gemini-4-argon-medium"
+    return trimmed
+      .toLowerCase()
+      .replace(/[()[\]]/g, " ")
+      .trim()
+      .replace(/\s+/g, "-");
+  }
+  return trimmed;
+}
+
+export function buildMergedModelCatalog(
+  baseCatalog: HarnessModelCatalog,
+  homeDir: string
+): HarnessModelCatalog {
+  const homes = Array.from(new Set([homeDir, os.homedir()].filter(Boolean)));
+  const sets: Record<HarnessId, Set<string>> = {
+    "claude-code": new Set(),
+    codex: new Set(),
+    opencode: new Set(),
+    antigravity: new Set(),
+    cursor: new Set(),
+  };
+
+  for (const h of Object.keys(sets) as HarnessId[]) {
+    for (const raw of baseCatalog[h] ?? []) {
+      const m = normalizeModelId(raw);
+      if (m) sets[h].add(m);
+    }
+  }
+
+  for (const h of homes) {
+    // Antigravity settings
+    try {
+      const agySettingsPath = path.join(h, ".gemini", "antigravity-cli", "settings.json");
+      if (fs.existsSync(agySettingsPath)) {
+        const agySettings = JSON.parse(fs.readFileSync(agySettingsPath, "utf8")) as {
+          model?: string;
+        };
+        if (agySettings.model?.trim()) {
+          const norm = normalizeModelId(agySettings.model);
+          if (norm) sets.antigravity.add(norm);
+        }
+      }
+    } catch {}
+
+    // Codex models_cache.json & config.toml
+    try {
+      const codexCachePath = path.join(h, ".codex", "models_cache.json");
+      if (fs.existsSync(codexCachePath)) {
+        const cacheObj = JSON.parse(fs.readFileSync(codexCachePath, "utf8")) as {
+          models?: Array<{ slug?: string }>;
+        };
+        for (const item of cacheObj.models ?? []) {
+          if (item?.slug?.trim()) sets.codex.add(item.slug.trim());
+        }
+      }
+      const codexTomlPath = path.join(h, ".codex", "config.toml");
+      if (fs.existsSync(codexTomlPath)) {
+        const tomlText = fs.readFileSync(codexTomlPath, "utf8");
+        for (const m of tomlText.matchAll(/^\s*model\s*=\s*["']([^"']+)["']/gm)) {
+          if (m[1]?.trim()) sets.codex.add(m[1].trim());
+        }
+      }
+    } catch {}
+
+    // Claude settings.json
+    try {
+      const claudeSettingsPath = path.join(h, ".claude", "settings.json");
+      if (fs.existsSync(claudeSettingsPath)) {
+        const settings = JSON.parse(fs.readFileSync(claudeSettingsPath, "utf8")) as {
+          model?: string;
+          env?: Record<string, string>;
+        };
+        if (settings.model?.trim()) sets["claude-code"].add(settings.model.trim());
+        const envObj = settings.env ?? {};
+        for (const k of [
+          "ANTHROPIC_MODEL",
+          "ANTHROPIC_CUSTOM_MODEL_OPTION",
+          "ANTHROPIC_DEFAULT_SONNET_MODEL",
+          "ANTHROPIC_DEFAULT_OPUS_MODEL",
+          "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+        ]) {
+          const v = envObj[k]?.trim();
+          if (v) {
+            sets["claude-code"].add(v);
+            sets["claude-code"].add(v.replace(/\[.*\]$/, "").trim());
+          }
+        }
+      }
+    } catch {}
+  }
+
+  for (const harness of Object.keys(sets) as HarnessId[]) {
+    for (const m of asyncCliModelsCache[harness]) {
+      const norm = normalizeModelId(m);
+      if (norm) sets[harness].add(norm);
+    }
+    for (const m of STANDARD_HARNESS_MODELS[harness]) {
+      sets[harness].add(m);
+    }
+  }
+
+  return {
+    "claude-code": Array.from(sets["claude-code"]),
+    codex: Array.from(sets.codex),
+    opencode: Array.from(sets.opencode),
+    antigravity: Array.from(sets.antigravity),
+    cursor: Array.from(sets.cursor),
+  };
+}
+
+function discoverExtraCliSessionsForProject(
+  projectRoot: string,
+  homeDir: string,
+  existing: CliRecentSessionEntry[]
+): CliRecentSessionEntry[] {
+  const resolvedRoot = path.resolve(projectRoot);
+  const normRootLower = resolvedRoot.replaceAll("\\", "/").toLowerCase();
+  const byKey = new Map<string, CliRecentSessionEntry>();
+
+  for (const item of existing) {
+    const isSes =
+      item.harnessSessionId.startsWith("ses_") ||
+      Boolean(
+        item.transcriptPath &&
+          /[\\/]ses_[A-Za-z0-9_-]+\.jsonl$/i.test(item.transcriptPath)
+      );
+    const correctedHarness: HarnessId = isSes ? "opencode" : item.harness;
+    const normalizedItem: CliRecentSessionEntry = {
+      ...item,
+      harness: correctedHarness,
+    };
+    byKey.set(`${correctedHarness}::${item.harnessSessionId}`, normalizedItem);
+  }
+
+  // Only scan user's real OS homedir if homeDir is os.homedir() (avoid polluting isolated unit test temp homes)
+  const scanHomes = [homeDir];
+  for (const h of scanHomes) {
+    // 1. Scan OpenCode SQLite DB (`session` table) for sessions matching projectRoot
+    const ocDbPath = path.join(h, ".local", "share", "opencode", "opencode.db");
+    if (fs.existsSync(ocDbPath)) {
+      let db: DatabaseSync | null = null;
+      try {
+        db = new DatabaseSync(ocDbPath, { readOnly: true });
+        const rows = db
+          .prepare(
+            "SELECT id, title, directory, time_created, time_updated FROM session WHERE EXISTS (SELECT 1 FROM message m WHERE m.session_id = session.id) ORDER BY time_updated DESC LIMIT 60"
+          )
+          .all() as Array<{
+          id?: unknown;
+          title?: unknown;
+          directory?: unknown;
+          time_created?: unknown;
+          time_updated?: unknown;
+        }>;
+        for (const r of rows) {
+          if (typeof r.id !== "string" || !r.id.trim()) continue;
+          const dir =
+            typeof r.directory === "string"
+              ? path.resolve(r.directory).replaceAll("\\", "/").toLowerCase()
+              : "";
+          if (dir !== normRootLower) continue;
+          // Skip subagent child sessions (`... (@subagent)`)
+          const title = typeof r.title === "string" ? r.title.trim() : "";
+          if (title.includes("subagent)")) continue;
+          const key = `opencode::${r.id}`;
+          const prev = byKey.get(key);
+          const updatedAt =
+            typeof r.time_updated === "number" ? r.time_updated : Date.now();
+          const startedAt =
+            typeof r.time_created === "number" ? r.time_created : updatedAt;
+          if (prev) {
+            prev.transcriptPath = ocDbPath;
+            if (!prev.summary && title) prev.summary = title;
+            if (updatedAt > prev.updatedAt) prev.updatedAt = updatedAt;
+          } else {
+            byKey.set(key, {
+              harnessSessionId: r.id,
+              harness: "opencode",
+              model: null,
+              summary: title || `OpenCode (${r.id.slice(0, 10)})`,
+              transcriptPath: ocDbPath,
+              asdSessionId: null,
+              projectRoot: resolvedRoot,
+              startedAt,
+              updatedAt,
+            });
+          }
+        }
+      } catch {
+        // Ignore opencode.db scan errors
+      } finally {
+        try {
+          db?.close();
+        } catch {}
+      }
+    }
+
+    // 2. Scan Claude Code ~/.claude/projects/<encoded>*/*.jsonl matching projectRoot (including --asd-wt-* worktrees)
+    const encodedDirLower = resolvedRoot.replace(/[:\\/]/g, "-").toLowerCase();
+    const claudeProjectsRoot = path.join(h, ".claude", "projects");
+    if (fs.existsSync(claudeProjectsRoot)) {
+      try {
+        const projDirs = fs
+          .readdirSync(claudeProjectsRoot, { withFileTypes: true })
+          .filter((d) => {
+            if (!d.isDirectory()) return false;
+            const n = d.name.toLowerCase();
+            return (
+              n === encodedDirLower ||
+              n.startsWith(`${encodedDirLower}--asd-wt-`)
+            );
+          });
+        for (const pDir of projDirs) {
+          const claudeProjDir = path.join(claudeProjectsRoot, pDir.name);
+          const isWorktree = pDir.name.toLowerCase().includes("--asd-wt-");
+          const files = fs.readdirSync(claudeProjDir, { withFileTypes: true });
+          for (const f of files) {
+            if (!f.isFile() || !f.name.endsWith(".jsonl")) continue;
+            const sid = f.name.slice(0, -".jsonl".length);
+            if (!sid || sid.startsWith("ses_")) continue;
+            const fullPath = path.join(claudeProjDir, f.name);
+            const stat = fs.statSync(fullPath);
+            const key = `claude-code::${sid}`;
+
+            let summary = "";
+            let detectedModel: string | null = null;
+            let hasAssistantTurn = false;
+            try {
+              const rawContent = fs.readFileSync(fullPath, "utf8");
+              hasAssistantTurn =
+                rawContent.includes('"type":"assistant"') ||
+                rawContent.includes('"type":"result"');
+              const headLines = rawContent.slice(0, 24576).split(/\r?\n/);
+              for (const line of headLines) {
+                if (!line.trim()) continue;
+                if (
+                  !line.includes('"type":"user"') &&
+                  !line.includes('"lastPrompt"') &&
+                  !line.includes('"model"')
+                ) {
+                  continue;
+                }
+                const parsed = JSON.parse(line) as {
+                  type?: string;
+                  lastPrompt?: string;
+                  params?: { model?: string };
+                  message?: { content?: string; model?: string };
+                };
+                if (!detectedModel) {
+                  const m =
+                    parsed.message?.model || parsed.params?.model || null;
+                  if (typeof m === "string" && m.trim()) {
+                    detectedModel = normalizeModelId(m.trim());
+                  }
+                }
+                if (!summary) {
+                  const rawPrompt =
+                    typeof parsed.lastPrompt === "string" &&
+                    parsed.lastPrompt.trim()
+                      ? parsed.lastPrompt.trim()
+                      : parsed.type === "user" &&
+                          typeof parsed.message?.content === "string"
+                        ? parsed.message.content.trim()
+                        : "";
+                  if (rawPrompt) {
+                    const taskMatch = rawPrompt.match(
+                      /#\s*ASD Subagent Task:\s*([^\r\n]+)\s*[\r\n]+Title:\s*([^\r\n]+)/i
+                    );
+                    if (taskMatch) {
+                      summary = `[${taskMatch[1].trim()}] ${taskMatch[2].trim()}`.slice(
+                        0,
+                        90
+                      );
+                    } else {
+                      summary = rawPrompt
+                        .replace(/\s+/g, " ")
+                        .trim()
+                        .slice(0, 80);
+                    }
+                  }
+                }
+              }
+            } catch {}
+
+            // Skip multi-retry worktree attempts that never produced an assistant turn
+            if (isWorktree && !hasAssistantTurn) continue;
+
+            const prev = byKey.get(key);
+            if (prev) {
+              prev.transcriptPath = fullPath;
+              if (!prev.summary && summary) prev.summary = summary;
+              if (!prev.model && detectedModel) prev.model = detectedModel;
+            } else {
+              byKey.set(key, {
+                harnessSessionId: sid,
+                harness: "claude-code",
+                model: detectedModel,
+                summary: summary || `Claude Code (${sid.slice(0, 8)})`,
+                transcriptPath: fullPath,
+                asdSessionId: null,
+                projectRoot: resolvedRoot,
+                startedAt: Math.round(stat.birthtimeMs || stat.mtimeMs),
+                updatedAt: Math.round(stat.mtimeMs),
+              });
+            }
+          }
+        }
+      } catch {
+        // Ignore claude project scan errors
+      }
+    }
+  }
+
+  return Array.from(byKey.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+const rememberedForegroundByProject = new Map<string, string>();
+
+export function setRememberedForegroundSessionId(
+  projectRoot: string,
+  sessionId: string | null
+): void {
+  const key = path.resolve(projectRoot).replaceAll("\\", "/").toLowerCase();
+  if (sessionId && sessionId.trim()) {
+    rememberedForegroundByProject.set(key, sessionId.trim());
+  } else {
+    rememberedForegroundByProject.delete(key);
+  }
+}
+
+export function getRememberedForegroundSessionId(
+  projectRoot: string
+): string | null {
+  const key = path.resolve(projectRoot).replaceAll("\\", "/").toLowerCase();
+  return rememberedForegroundByProject.get(key) ?? null;
+}
+
 export async function collectEnrichedSnapshot(
   projectRoot: string,
   homeDir: string
 ): Promise<EnrichedSnapshot> {
   await discoverHarnessModels({ projectRoot, homeDir, skipCliSpawn: true });
+  if (
+    !asyncCliScanCompleted &&
+    !asyncCliScanInFlight &&
+    !process.env.NODE_TEST_CONTEXT &&
+    process.env.NODE_ENV !== "test"
+  ) {
+    void refreshAsyncCliModels().catch(() => {});
+  }
   const snapshot = await collectDashboardSnapshot({ projectRoot, homeDir });
+  const availableModels = buildMergedModelCatalog(snapshot.availableModels, homeDir);
   const gitInfo = getProjectGitInfo(projectRoot);
-  const foregroundSessionId = getForegroundSessionId(projectRoot);
+  const rememberedFg = getRememberedForegroundSessionId(projectRoot);
+  const rawFg = rememberedFg ?? getForegroundSessionId(projectRoot);
+  const matchedFg =
+    rawFg &&
+    (snapshot.sessions.find((s) => s.session_id === rawFg)?.session_id ??
+      snapshot.sessions.find((s) => s.session_id.startsWith(`${rawFg}::`))
+        ?.session_id);
+  const foregroundSessionId = matchedFg ?? snapshot.session?.session_id ?? null;
+  const activeSession =
+    (foregroundSessionId
+      ? snapshot.sessions.find((s) => s.session_id === foregroundSessionId)
+      : null) ??
+    snapshot.session ??
+    null;
+  const activeTasks = activeSession
+    ? (snapshot.allTasks ?? []).filter(
+        (t) => t.session_id === activeSession.session_id
+      )
+    : snapshot.tasks;
+  const activeDebates = activeSession
+    ? (snapshot.allDebates ?? []).filter(
+        (d) => d.session_id === activeSession.session_id
+      )
+    : snapshot.debates;
+
+  // Normalize `ses_...` OpenCode sessions in cliRecentSessions & drivers
+  const cliRecentSessions = discoverExtraCliSessionsForProject(
+    projectRoot,
+    homeDir,
+    snapshot.cliRecentSessions ?? []
+  );
+
+  const normalizedDrivers: Record<string, DriverRow[]> = {};
+  for (const [sid, list] of Object.entries(snapshot.drivers ?? {})) {
+    normalizedDrivers[sid] = list.map((d) => {
+      const fixedHarness =
+        d.harness_session_id && d.harness_session_id.startsWith("ses_")
+          ? "opencode"
+          : d.harness;
+      const fixedModel = d.model ? normalizeModelId(d.model) : d.model;
+      return {
+        ...d,
+        harness: fixedHarness,
+        model: fixedModel,
+      };
+    });
+  }
+  for (const s of snapshot.sessions ?? []) {
+    if (s.session_id.includes("::") && !normalizedDrivers[s.session_id]) {
+      const baseSid = s.session_id.slice(0, s.session_id.indexOf("::"));
+      if (normalizedDrivers[baseSid]) {
+        normalizedDrivers[s.session_id] = normalizedDrivers[baseSid];
+      }
+    }
+  }
+
   return {
     ...snapshot,
+    session: activeSession,
+    tasks: activeTasks,
+    debates: activeDebates,
+    cliRecentSessions,
+    drivers: normalizedDrivers,
+    availableModels,
     ...gitInfo,
     foregroundSessionId,
   };

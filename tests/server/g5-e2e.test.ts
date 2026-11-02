@@ -219,7 +219,7 @@ test("G5 E2E — Scenarios 1, 2, 3, 5, 6, 7, 8 (Drivers, Briefing, Resume Follow
       ["claude-code", /claude --resume sid-1/],
       ["codex", /codex resume sid-1/],
       ["opencode", /opencode --session sid-1/],
-      ["antigravity", /agy --resume sid-1/],
+      ["antigravity", /agy --conversation sid-1/],
       ["cursor", /agent --resume sid-1/],
     ] as const) {
       const rCmd = await fetch(

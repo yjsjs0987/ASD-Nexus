@@ -25,15 +25,31 @@ export class HttpApiError extends Error {
   }
 }
 
-export function validateSessionId(sessionId: unknown): string {
-  if (!isValidAsdSessionId(sessionId)) {
+export function extractCompoundSessionId(sessionId: unknown): {
+  rawSessionId: string;
+  baseSessionId: string;
+  debateId: string | null;
+} {
+  const raw = typeof sessionId === "string" ? sessionId.trim() : "";
+  const splitIdx = raw.indexOf("::");
+  const baseSessionId = splitIdx !== -1 ? raw.slice(0, splitIdx) : raw;
+  const suffix = splitIdx !== -1 ? raw.slice(splitIdx + 2).trim() : "";
+  if (!isValidAsdSessionId(baseSessionId)) {
     throw new HttpApiError(
       400,
       "INVALID_SESSION_ID",
       `Invalid ASD session ID: ${String(sessionId)}`
     );
   }
-  return sessionId;
+  return {
+    rawSessionId: raw,
+    baseSessionId,
+    debateId: suffix || null,
+  };
+}
+
+export function validateSessionId(sessionId: unknown): string {
+  return extractCompoundSessionId(sessionId).baseSessionId;
 }
 
 export function validateProjectRoot(rawPath: unknown): string {

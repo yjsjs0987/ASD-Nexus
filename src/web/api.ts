@@ -263,6 +263,7 @@ export async function getTranscript(params: {
   projectRoot?: string;
   harness: "claude-code" | "codex" | "opencode" | "antigravity" | "cursor";
   harnessSessionId: string;
+  asdSessionId?: string;
   transcriptPath?: string;
   limit?: number;
   before?: number;
@@ -271,6 +272,7 @@ export async function getTranscript(params: {
   if (params.projectRoot) sp.set("projectRoot", params.projectRoot);
   sp.set("harness", params.harness);
   sp.set("harnessSessionId", params.harnessSessionId);
+  if (params.asdSessionId) sp.set("asdSessionId", params.asdSessionId);
   if (params.transcriptPath) sp.set("transcriptPath", params.transcriptPath);
   if (params.limit) sp.set("limit", String(params.limit));
   if (params.before) sp.set("before", String(params.before));

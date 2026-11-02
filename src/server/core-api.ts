@@ -11,8 +11,8 @@ import {
   atomicWriteFileSync,
   attachDriver,
   buildDriverBriefing,
-  buildInteractiveResumeHarnessCommand,
-  buildResumeHarnessCommand,
+  buildInteractiveResumeHarnessCommand as rawBuildInteractiveResumeHarnessCommand,
+  buildResumeHarnessCommand as rawBuildResumeHarnessCommand,
   collectDashboardSnapshot,
   computeProjectHash,
   detachDriver,
@@ -113,8 +113,6 @@ export {
   atomicWriteFileSync,
   attachDriver,
   buildDriverBriefing,
-  buildInteractiveResumeHarnessCommand,
-  buildResumeHarnessCommand,
   collectDashboardSnapshot,
   computeProjectHash,
   detachDriver,
@@ -203,6 +201,68 @@ export {
   type TranscriptMessage,
   type WorktreeDiffSnapshot,
 };
+
+/**
+ * Antigravity CLI (`agy`) uses `--conversation <id>` (not `--resume <id>`) to resume
+ * an existing conversation. Normalize any `--resume` flag on `agy` commands.
+ */
+export function buildInteractiveResumeHarnessCommand(
+  harnessOrOptions:
+    | HarnessId
+    | {
+        harness: HarnessId;
+        harnessSessionId?: string | null;
+        model?: string | null;
+      },
+  harnessSessionId?: string | null,
+  model?: string | null
+): { command: string; args: string[]; cliString: string } {
+  const built = rawBuildInteractiveResumeHarnessCommand(
+    harnessOrOptions as never,
+    harnessSessionId,
+    model
+  );
+  if (built.command === "agy") {
+    const args = built.args.map((a) => (a === "--resume" ? "--conversation" : a));
+    return {
+      command: built.command,
+      args,
+      cliString: [built.command, ...args].join(" "),
+    };
+  }
+  return built;
+}
+
+export function buildResumeHarnessCommand(
+  harnessOrOptions:
+    | HarnessId
+    | {
+        harness: HarnessId;
+        harnessSessionId: string;
+        prompt?: string;
+        model?: string | null;
+        thinkingEffort?: string | null;
+      },
+  harnessSessionId?: string,
+  prompt?: string,
+  model?: string | null,
+  thinkingEffort?: string | null
+): { command: string; args: string[] } {
+  const built = rawBuildResumeHarnessCommand(
+    harnessOrOptions as never,
+    harnessSessionId as string,
+    prompt,
+    model,
+    thinkingEffort
+  );
+  if (built.command === "agy") {
+    return {
+      command: built.command,
+      args: built.args.map((a) => (a === "--resume" ? "--conversation" : a)),
+    };
+  }
+  return built;
+}
 
 function requireExplicitSessionId(sessionId: string | undefined, fnName: string): string {
   const trimmed = sessionId?.trim() ?? "";

@@ -158,13 +158,16 @@ pub fn run() {
             .parse()
             .context("URL 파싱 실패")?;
 
-            let window = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
-                .title("ASD GUI")
+            let mut win_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::External(url))
+                .title("ASD GUI — Agent Swarm Director")
                 .inner_size(1440.0, 900.0)
                 .min_inner_size(1024.0, 768.0)
                 .center()
-                .visible(true)
-                .build()?;
+                .visible(true);
+            if let Some(default_icon) = app.default_window_icon().cloned() {
+                win_builder = win_builder.icon(default_icon)?;
+            }
+            let window = win_builder.build()?;
 
             println!(
                 "{{\"type\":\"asd-tauri-ready\",\"port\":{},\"token\":\"{}\"}}",

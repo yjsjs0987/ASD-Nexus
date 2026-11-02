@@ -17,8 +17,10 @@ import {
 import { HttpApiError, type ServerContext, validateProjectRoot } from "../context.ts";
 import { readJsonBody, sendJson } from "../index.ts";
 import {
+  buildMergedModelCatalog,
   collectEnrichedSnapshot,
   getProjectGitInfo,
+  refreshAsyncCliModels,
   type StateWatcher,
 } from "../watcher/state-watcher.ts";
 import type {
@@ -112,6 +114,11 @@ export async function handleProjectsRoutes(
     }
 
     const snapshot = await collectEnrichedSnapshot(projectRoot, context.homeDir);
+    if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== "test") {
+      void refreshAsyncCliModels()
+        .then(() => watcher.forceBroadcastProject(projectRoot))
+        .catch(() => {});
+    }
     const response: OpenProjectResponse = {
       ...snapshot,
       ...(recoveredOrphans.length > 0 ? { recoveredOrphans } : {}),
@@ -125,14 +132,28 @@ export async function handleProjectsRoutes(
     const projectRoot = rawRoot
       ? validateProjectRoot(rawRoot)
       : process.cwd();
-    const forceRefresh = parsedUrl.searchParams.get("refresh") === "1";
+    const forceRefresh =
+      parsedUrl.searchParams.get("refresh") === "1" ||
+      parsedUrl.searchParams.get("skipCliSpawn") !== "1";
     const skipCliSpawn = parsedUrl.searchParams.get("skipCliSpawn") === "1";
-    const models = await discoverHarnessModels({
+    if (
+      forceRefresh &&
+      !skipCliSpawn &&
+      !process.env.NODE_TEST_CONTEXT &&
+      process.env.NODE_ENV !== "test"
+    ) {
+      await refreshAsyncCliModels();
+    }
+    const baseModels = await discoverHarnessModels({
       projectRoot,
       homeDir: context.homeDir,
-      forceRefresh,
-      skipCliSpawn,
+      forceRefresh: true,
+      skipCliSpawn: true,
     });
+    const models = buildMergedModelCatalog(baseModels, context.homeDir);
+    if (rawRoot) {
+      void watcher.forceBroadcastProject(projectRoot).catch(() => {});
+    }
     const response: GetProjectModelsResponse = { models };
     sendJson(res, 200, response);
     return true;

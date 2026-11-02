@@ -1,12 +1,20 @@
-// T5.1 — 드라이버 바(DriverBar): /api/drivers 목록 조회 + 드라이버 교체(attach) + 실행 취소(cancel)
+// T5.1 — 드라이버 바(DriverBar): /api/drivers 목록 조회 + 드라이버/모델 교체(attach) + 실행 취소(cancel)
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useApp } from "../store";
 import * as api from "../api.ts";
 import type { DriverRow, HarnessId } from "../../shared/protocol.ts";
 import { LinkIcon, TerminalIcon, StopIcon, RefreshIcon } from "./Icons";
+import { ModelPicker } from "./ModelPicker.tsx";
 
-const HARNESS_ALL: HarnessId[] = ["claude-code", "opencode", "codex", "antigravity", "cursor"];
-const HARNESS_LABEL: Record<HarnessId, string> = {
+export const HARNESS_ALL: HarnessId[] = [
+  "claude-code",
+  "opencode",
+  "codex",
+  "antigravity",
+  "cursor",
+];
+
+export const HARNESS_LABEL: Record<HarnessId, string> = {
   "claude-code": "Claude Code",
   opencode: "OpenCode",
   codex: "Codex",
@@ -20,6 +28,7 @@ const SOURCE_LABEL: Record<string, string> = {
   "gui-pty": "GUI PTY",
   "cli-init": "CLI 초기",
   "cli-asd": "CLI ASD",
+  migrated: "마이그레이션",
 };
 
 export default function DriverBar() {
@@ -40,7 +49,10 @@ export default function DriverBar() {
       const res = await api.getDrivers(projectRoot, fgId);
       setDrivers(res.drivers);
       setActiveDriverId(res.activeDriverId);
-      const active = res.drivers.find((d) => d.driver_id === res.activeDriverId) ?? res.drivers[0];
+      const active =
+        res.drivers.find((d) => d.driver_id === res.activeDriverId) ??
+        res.drivers.find((d) => d.detached_at == null) ??
+        res.drivers[0];
       if (active?.harness) {
         setSelectedHarness(active.harness as HarnessId);
         setSelectedModel(active.model ?? "");
@@ -60,7 +72,10 @@ export default function DriverBar() {
   }, [projectRoot, fgId, app.snapshot?.timestamp, loadDrivers]);
 
   const activeDriver = useMemo(
-    () => drivers.find((d) => d.driver_id === activeDriverId) ?? drivers.find((d) => d.detached_at == null) ?? null,
+    () =>
+      drivers.find((d) => d.driver_id === activeDriverId) ??
+      drivers.find((d) => d.detached_at == null) ??
+      null,
     [drivers, activeDriverId],
   );
 
@@ -71,12 +86,11 @@ export default function DriverBar() {
       !app.liveJob.finished,
   );
 
-  const harnessModels = useMemo(() => {
-    const map = app.snapshot?.availableModels as Record<string, string[]> | undefined;
-    return map?.[selectedHarness] ?? [];
-  }, [app.snapshot?.availableModels, selectedHarness]);
-
-  async function handleAttach(harness: HarnessId, model?: string, harnessSessionId?: string) {
+  async function handleAttach(
+    harness: HarnessId,
+    model?: string,
+    harnessSessionId?: string,
+  ) {
     if (!projectRoot || !fgId) return;
     setBusy(true);
     try {
@@ -84,12 +98,16 @@ export default function DriverBar() {
         projectRoot,
         sessionId: fgId,
         harness,
-        ...(model?.trim() ? { model: model.trim() } : {}),
-        ...(harnessSessionId?.trim() ? { harnessSessionId: harnessSessionId.trim() } : {}),
+        ...(model !== undefined ? { model: model.trim() || undefined } : {}),
+        ...(harnessSessionId?.trim()
+          ? { harnessSessionId: harnessSessionId.trim() }
+          : {}),
         source: "gui-headless",
       });
       setActiveDriverId(res.driver.driver_id);
+      app.setSelectedDriverId(res.driver.driver_id);
       await loadDrivers();
+      await app.refreshSnapshot();
     } catch (e) {
       app.reportError(api.errorText(e));
     } finally {
@@ -115,18 +133,23 @@ export default function DriverBar() {
 
   function handleOpenDriverPty() {
     if (!projectRoot || !fgId) return;
-    const h = (activeDriver?.harness as HarnessId | undefined) ?? selectedHarness;
+    const h =
+      (activeDriver?.harness as HarnessId | undefined) ?? selectedHarness;
     app.openTerminalTab({
       title: `Driver (${HARNESS_LABEL[h] ?? h})`,
       cwd: projectRoot,
       harness: h,
       harnessSessionId: activeDriver?.harness_session_id ?? undefined,
       model: activeDriver?.model ?? (selectedModel.trim() || undefined),
-      ...(activeDriver ? { asDriverOf: { sessionId: fgId, driverId: activeDriver.driver_id } } : {}),
+      ...(activeDriver
+        ? { asDriverOf: { sessionId: fgId, driverId: activeDriver.driver_id } }
+        : {}),
     });
   }
 
   if (!projectRoot || !fgId) return null;
+
+  const isSameHarness = activeDriver?.harness === selectedHarness;
 
   return (
     <div className="asd-driver-bar" role="region" aria-label="드라이버 제어 바">
@@ -134,7 +157,7 @@ export default function DriverBar() {
         <span className={`tag ${activeDriver ? "ok" : "warn"}`}>
           {activeDriver
             ? `드라이버: ${HARNESS_LABEL[activeDriver.harness as HarnessId] ?? activeDriver.harness}`
-            : "드라이버 미연결"}
+            : "드라이버 미연결 (메시지 전송 시 자동 재연결)"}
         </span>
         {activeDriver?.model && (
           <code className="asd-driver-model" title="현재 연결된 드라이버 모델">
@@ -146,9 +169,7 @@ export default function DriverBar() {
             {SOURCE_LABEL[activeDriver.source] ?? activeDriver.source}
           </span>
         )}
-        {isDriverRunning && (
-          <span className="tag warn">턴 실행 중</span>
-        )}
+        {isDriverRunning && <span className="tag warn">턴 실행 중</span>}
 
         <div className="spacer" />
 
@@ -158,41 +179,69 @@ export default function DriverBar() {
           onChange={(e) => {
             const nextH = e.target.value as HarnessId;
             setSelectedHarness(nextH);
-            const nextModels = (app.snapshot?.availableModels as Record<string, string[]> | undefined)?.[nextH] ?? [];
-            setSelectedModel(nextModels[0] ?? "");
+            const nextModels =
+              (app.snapshot?.availableModels as Record<string, string[]> | undefined)?.[
+                nextH
+              ] ?? [];
+            const matchingDrv = drivers.find((d) => d.harness === nextH);
+            setSelectedModel(matchingDrv?.model ?? nextModels[0] ?? "");
           }}
           aria-label="교체할 드라이버 하네스"
         >
-          {HARNESS_ALL.map((h) => (
-            <option key={h} value={h}>
-              {HARNESS_LABEL[h]}
-            </option>
-          ))}
+          {HARNESS_ALL.map((h) => {
+            const installed = app.snapshot?.harnesses?.[h]?.installed !== false;
+            return (
+              <option key={h} value={h}>
+                {HARNESS_LABEL[h]}
+                {!installed ? " (미설치)" : ""}
+              </option>
+            );
+          })}
         </select>
 
-        <input
-          type="text"
-          className="asd-input asd-driver-model-input"
-          list="driver-bar-models"
+        <ModelPicker
+          harness={selectedHarness}
           value={selectedModel}
-          onChange={(e) => setSelectedModel(e.target.value)}
-          placeholder="모델 ID (선택)"
-          aria-label="교체할 드라이버 모델"
+          onChange={(nextModel) => {
+            setSelectedModel(nextModel);
+            if (activeDriver && activeDriver.harness === selectedHarness) {
+              void handleAttach(
+                selectedHarness,
+                nextModel,
+                activeDriver.harness_session_id ?? undefined,
+              );
+            }
+          }}
+          disabled={busy}
+          ariaLabel="교체할 드라이버 모델"
         />
-        <datalist id="driver-bar-models">
-          {harnessModels.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
 
         <button
           type="button"
           className="btn sm"
           disabled={busy}
-          onClick={() => void handleAttach(selectedHarness, selectedModel)}
-          title="선택한 하네스/모델로 활성 드라이버 교체"
+          onClick={() => {
+            const existingHarnessSid = isSameHarness
+              ? (activeDriver?.harness_session_id ?? undefined)
+              : (drivers.find(
+                  (d) => d.harness === selectedHarness && d.harness_session_id,
+                )?.harness_session_id ??
+                  app.snapshot?.cliRecentSessions?.find(
+                    (c) =>
+                      c.harness === selectedHarness &&
+                      c.promotedAsdSessionId === fgId &&
+                      c.harnessSessionId,
+                  )?.harnessSessionId ??
+                  undefined);
+            void handleAttach(
+              selectedHarness,
+              selectedModel,
+              existingHarnessSid,
+            );
+          }}
+          title="선택한 하네스/모델로 활성 드라이버 적용"
         >
-          <LinkIcon /> 드라이버 교체
+          <LinkIcon /> {activeDriver ? "드라이버 교체" : "드라이버 연결"}
         </button>
 
         <button
@@ -228,10 +277,13 @@ export default function DriverBar() {
         <button
           type="button"
           className="btn sm ghost"
-          onClick={() => void loadDrivers()}
+          onClick={() => {
+            void loadDrivers();
+            void app.refreshModels();
+          }}
           disabled={busy}
-          aria-label="드라이버 목록 새로고침"
-          title="드라이버 목록 새로고침"
+          aria-label="드라이버 및 모델 목록 새로고침"
+          title="드라이버 및 모델 목록 새로고침"
         >
           <RefreshIcon />
         </button>
@@ -241,16 +293,39 @@ export default function DriverBar() {
         <div className="asd-driver-history">
           {drivers.map((d) => {
             const isAct = d.driver_id === activeDriverId || d.detached_at == null;
+            const isSelected =
+              (app.selectedDriverId ?? activeDriver?.driver_id) === d.driver_id;
             return (
-              <div key={d.driver_id} className={`asd-driver-history-item${isAct ? " active" : ""}`}>
+              <div
+                key={d.driver_id}
+                className={`asd-driver-history-item${isAct ? " active" : ""}${isSelected ? " viewing" : ""}`}
+              >
                 <code>{d.driver_id}</code>
                 <span className={`tag ${isAct ? "ok" : ""}`}>
                   {HARNESS_LABEL[d.harness as HarnessId] ?? d.harness}
                 </span>
                 {d.model && <span className="tag">{d.model}</span>}
-                <span className="asd-dim">{SOURCE_LABEL[d.source] ?? d.source}</span>
-                {d.detach_reason && <span className="asd-dim">해제 사유: {d.detach_reason}</span>}
+                {d.harness_session_id && (
+                  <code className="asd-dim" title={d.harness_session_id}>
+                    sid:{d.harness_session_id.slice(0, 10)}
+                  </code>
+                )}
+                <span className="asd-dim">
+                  {SOURCE_LABEL[d.source] ?? d.source}
+                </span>
+                {d.detach_reason && (
+                  <span className="asd-dim">해제: {d.detach_reason}</span>
+                )}
                 <div className="spacer" />
+                {d.harness_session_id && (
+                  <button
+                    type="button"
+                    className={`btn sm ${isSelected ? "primary" : "ghost"}`}
+                    onClick={() => app.setSelectedDriverId(d.driver_id)}
+                  >
+                    대화 보기
+                  </button>
+                )}
                 {!isAct && (
                   <button
                     type="button"
