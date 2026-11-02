@@ -2,6 +2,7 @@
   "name": "asd-gui",
   "version": "2.3.2",
   "private": true,
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "description": "ASD GUI & Multi-Harness Session Management (GUI-web)",
   "engines": {

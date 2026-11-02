@@ -228,3 +228,9 @@ asd-gui/
     ├── server/                   # G0 ~ G5 백엔드 단위/통합 테스트
     └── chrome-ui-regression.mjs  # Headless Chrome CDP 기반 1440x900 UI 회귀 테스트
 ```
+
+---
+
+## 📄 라이선스 (License)
+
+[Functional Source License, Version 1.1, Apache 2.0 Future License (FSL-1.1-ALv2)](./LICENSE) © 2026 yjsjs0987
