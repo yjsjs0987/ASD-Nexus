@@ -13,11 +13,13 @@ import {
 import type {
   AttachDriverResponse,
   CreateSessionResponse,
+  DemoteSessionResponse,
   DriverPromptResponse,
   GetDriversResponse,
   GetResumeCommandResponse,
   GetTranscriptResponse,
   OpenProjectResponse,
+  PromoteSessionResponse,
   ResolveConflictResponse,
   ServerWsMessage,
   SetForegroundSessionResponse,
@@ -111,7 +113,24 @@ test("G5 E2E — Scenarios 1, 2, 3, 5, 6, 7, 8 (Drivers, Briefing, Resume Follow
 
       opts.onSpawn?.(process.pid);
       const out =
-        '{"session_id":"native-sid-from-runner-777"}\nDriver/Subagent output chunk.\n';
+        [
+          '{"session_id":"native-sid-from-runner-777"}',
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              content: [
+                { type: "thinking", thinking: "Analyzing login flow..." },
+                {
+                  type: "tool_use",
+                  id: "toolu_1",
+                  name: "Read",
+                  input: { file_path: "auth.ts" },
+                },
+                { type: "text", text: "Driver/Subagent output chunk." },
+              ],
+            },
+          }),
+        ].join("\n") + "\n";
       opts.onStdout(out);
       return { exitCode: 0, pid: process.pid };
     },
@@ -167,7 +186,19 @@ test("G5 E2E — Scenarios 1, 2, 3, 5, 6, 7, 8 (Drivers, Briefing, Resume Follow
         }),
         JSON.stringify({
           type: "assistant",
-          message: { role: "assistant", content: "Found issue in auth.ts" },
+          message: {
+            role: "assistant",
+            content: [
+              { type: "thinking", thinking: "Checking token expiry logic" },
+              {
+                type: "tool_use",
+                id: "call_1",
+                name: "Read",
+                input: { path: "auth.ts" },
+              },
+              { type: "text", text: "Found issue in auth.ts" },
+            ],
+          },
         }),
       ].join("\n") + "\n",
       "utf-8"
@@ -213,6 +244,13 @@ test("G5 E2E — Scenarios 1, 2, 3, 5, 6, 7, 8 (Drivers, Briefing, Resume Follow
     const trData = (await trRes.json()) as GetTranscriptResponse;
     assert.equal(trData.found, true);
     assert.equal(trData.messages.length, 2);
+    assert.equal(trData.messages[0]!.category, "user");
+    assert.equal(
+      trData.messages[1]!.thinking,
+      "Checking token expiry logic"
+    );
+    assert.equal(trData.messages[1]!.toolUse?.[0]?.name, "Read");
+    assert.equal(trData.messages[1]!.text, "Found issue in auth.ts");
 
     // Scenario 2: Verify resume command generation across harnesses
     for (const [h, expectedPattern] of [
@@ -298,6 +336,22 @@ test("G5 E2E — Scenarios 1, 2, 3, 5, 6, 7, 8 (Drivers, Briefing, Resume Follow
       (e): e is Extract<ServerWsMessage, { type: "driver_output_chunk" }> =>
         e.type === "driver_output_chunk" && e.sessionId === sessionA
     );
+    const streamThinkingEvt = await waitForEvent(
+      events,
+      (e): e is Extract<ServerWsMessage, { type: "driver_stream_event" }> =>
+        e.type === "driver_stream_event" &&
+        e.sessionId === sessionA &&
+        e.event.type === "thinking"
+    );
+    assert.equal(streamThinkingEvt.event.thinking, "Analyzing login flow...");
+    const streamToolEvt = await waitForEvent(
+      events,
+      (e): e is Extract<ServerWsMessage, { type: "driver_stream_event" }> =>
+        e.type === "driver_stream_event" &&
+        e.sessionId === sessionA &&
+        e.event.type === "tool_use"
+    );
+    assert.equal(streamToolEvt.event.toolName, "Read");
     const drvJobDone = await waitForEvent(
       events,
       (e): e is Extract<ServerWsMessage, { type: "job_finished" }> =>
@@ -615,6 +669,54 @@ test("G5 E2E — Scenarios 1, 2, 3, 5, 6, 7, 8 (Drivers, Briefing, Resume Follow
     assert.equal(recovered[0]!.to, "failed");
     assert.equal(recovered[0]!.reason, "orphaned");
     assert.equal(db.getTask(sessionA, "T3.1")?.status, "failed");
+
+    // =========================================================================
+    // Scenario 9: Promote CLI session to ASD session & Demote back to CLI session
+    // =========================================================================
+    const promoteRes = await fetch(
+      `http://127.0.0.1:${gui.port}/api/sessions/promote`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          projectRoot,
+          harness: "claude-code",
+          harnessSessionId: "cli-recent-sid-101",
+          model: "claude-sonnet-4-6",
+          memo: "Promoted from CLI",
+          transcriptPath: sampleTranscript,
+          makeForeground: true,
+        }),
+      }
+    );
+    assert.equal(promoteRes.status, 200);
+    const promoteBody = (await promoteRes.json()) as PromoteSessionResponse;
+    assert.ok(promoteBody.sessionId);
+    assert.equal(promoteBody.driver.harness, "claude-code");
+    assert.equal(
+      promoteBody.driver.harness_session_id,
+      "cli-recent-sid-101"
+    );
+
+    const demoteRes = await fetch(
+      `http://127.0.0.1:${gui.port}/api/sessions/demote`,
+      {
+        method: "POST",
+        headers,
+        body: JSON.stringify({
+          projectRoot,
+          sessionId: promoteBody.sessionId,
+          deleteAsdSession: true,
+        }),
+      }
+    );
+    assert.equal(demoteRes.status, 200);
+    const demoteBody = (await demoteRes.json()) as DemoteSessionResponse;
+    assert.equal(demoteBody.harness, "claude-code");
+    assert.equal(demoteBody.harnessSessionId, "cli-recent-sid-101");
+    assert.equal(demoteBody.deleted, true);
+    assert.match(demoteBody.cliString, /claude --resume cli-recent-sid-101/);
+    assert.equal(db.getSession(promoteBody.sessionId), undefined);
 
     ws.close();
   } finally {
