@@ -18,6 +18,7 @@ import type {
   TaskStatus,
   JobKind,
   DriverRunResult,
+  DriverStreamEvent,
   AsdDispatchOutput,
   AsdDebateOutput,
 } from "../shared/protocol.ts";
@@ -52,6 +53,10 @@ function isSubagentLogChunk(msg: ServerWsMessage): msg is Extract<ServerWsMessag
 
 function isDriverOutputChunk(msg: ServerWsMessage): msg is Extract<ServerWsMessage, { type: "driver_output_chunk" }> {
   return msg.type === "driver_output_chunk";
+}
+
+function isDriverStreamEvent(msg: ServerWsMessage): msg is Extract<ServerWsMessage, { type: "driver_stream_event" }> {
+  return msg.type === "driver_stream_event";
 }
 
 function isLogClosed(msg: ServerWsMessage): msg is Extract<ServerWsMessage, { type: "log_closed" }> {
@@ -262,6 +267,27 @@ export function useWsDriverOutputChunk(
         runId: msg.runId,
         offset: msg.offset,
         chunk: msg.chunk,
+      });
+    }
+  });
+}
+
+/** Structured real-time driver stream event (thinking, tool_use, tool_result, text). */
+export function useWsDriverStreamEvent(
+  onEvent: (params: {
+    projectRoot: string;
+    sessionId: string;
+    runId: string;
+    event: DriverStreamEvent;
+  }) => void
+): SubscriptionHandle {
+  return useWsSubscription((msg) => {
+    if (isDriverStreamEvent(msg)) {
+      onEvent({
+        projectRoot: msg.projectRoot,
+        sessionId: msg.sessionId,
+        runId: msg.runId,
+        event: msg.event,
       });
     }
   });

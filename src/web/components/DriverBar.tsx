@@ -229,7 +229,7 @@ export default function DriverBar() {
                   app.snapshot?.cliRecentSessions?.find(
                     (c) =>
                       c.harness === selectedHarness &&
-                      c.promotedAsdSessionId === fgId &&
+                      c.asdSessionId === fgId &&
                       c.harnessSessionId,
                   )?.harnessSessionId ??
                   undefined);
@@ -252,6 +252,18 @@ export default function DriverBar() {
         >
           <TerminalIcon /> PTY 연결
         </button>
+
+        {activeDriver?.harness_session_id && (
+          <button
+            type="button"
+            className="btn sm ghost"
+            disabled={busy || isDriverRunning}
+            onClick={() => void app.demoteSession(fgId, { deleteAsdSession: true })}
+            title="이 ASD 세션을 해제하고 원래 하네스의 일반 CLI 세션으로 하강"
+          >
+            CLI 하강
+          </button>
+        )}
 
         {isDriverRunning && (
           <button

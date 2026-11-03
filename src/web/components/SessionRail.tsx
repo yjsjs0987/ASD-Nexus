@@ -125,28 +125,45 @@ export default function SessionPanel({
     activeCliSession,
     selectCliSession,
     promoteCliSessionToAsd,
+    demoteSession,
+    deleteSession,
     attachCliSessionToCurrentAsd,
     openTerminalTab,
   } = app;
   const [q, setQ] = useState("");
+  const [viewFilter, setViewFilter] = useState<"all" | "asd" | "cli">("all");
+  const [harnessFilter, setHarnessFilter] = useState<string>("all");
   const busy = new Set(busySessions);
+
+  const asdSessionIdSet = useMemo(
+    () => new Set(sessions.map((s) => s.id)),
+    [sessions],
+  );
 
   const list = useMemo(
     () =>
-      sessions.filter(
-        (c) =>
-          !q ||
-          c.title.toLowerCase().includes(q.toLowerCase()) ||
-          c.id.toLowerCase().includes(q.toLowerCase()) ||
-          (c.workspaceDir ?? "").toLowerCase().includes(q.toLowerCase()),
-      ),
-    [sessions, q],
+      sessions.filter((c) => {
+        if (harnessFilter !== "all" && c.harness !== harnessFilter) return false;
+        if (!q) return true;
+        const query = q.toLowerCase();
+        return (
+          c.title.toLowerCase().includes(query) ||
+          c.id.toLowerCase().includes(query) ||
+          (c.workspaceDir ?? "").toLowerCase().includes(query)
+        );
+      }),
+    [sessions, q, harnessFilter],
   );
 
   const cliSessions = useMemo(() => {
     const raw = app.snapshot?.cliRecentSessions ?? [];
     const query = q.trim().toLowerCase();
     return raw.filter((item) => {
+      // 이미 활성 ASD 세션으로 승격되어 있는 CLI 세션은 기본 목록에서 중복 노출을 방지 (검색 시에는 노출)
+      if (!query && item.asdSessionId && asdSessionIdSet.has(item.asdSessionId)) {
+        return false;
+      }
+      if (harnessFilter !== "all" && item.harness !== harnessFilter) return false;
       if (!query) return true;
       return (
         (item.summary || "").toLowerCase().includes(query) ||
@@ -155,7 +172,7 @@ export default function SessionPanel({
         (item.model || "").toLowerCase().includes(query)
       );
     });
-  }, [app.snapshot?.cliRecentSessions, q]);
+  }, [app.snapshot?.cliRecentSessions, q, harnessFilter, asdSessionIdSet]);
 
   return (
     <aside
@@ -184,161 +201,251 @@ export default function SessionPanel({
           aria-label="세션 검색"
         />
 
+        <div
+          className="row"
+          style={{ gap: 4, padding: "0 10px 8px", flexWrap: "wrap" }}
+          role="group"
+          aria-label="세션 필터"
+        >
+          {(
+            [
+              ["all", "전체"],
+              ["asd", `ASD (${list.length})`],
+              ["cli", `CLI (${cliSessions.length})`],
+            ] as const
+          ).map(([val, label]) => (
+            <button
+              key={val}
+              type="button"
+              className={`pill ${viewFilter === val ? "active" : ""}`}
+              style={{ fontSize: 11, padding: "2px 8px" }}
+              onClick={() => setViewFilter(val)}
+            >
+              {label}
+            </button>
+          ))}
+          <select
+            className="asd-select"
+            style={{ marginLeft: "auto", fontSize: 11, padding: "2px 6px", height: 24 }}
+            value={harnessFilter}
+            onChange={(e) => setHarnessFilter(e.target.value)}
+            aria-label="하네스별 필터"
+          >
+            <option value="all">모든 하네스</option>
+            <option value="claude-code">Claude Code</option>
+            <option value="opencode">OpenCode</option>
+            <option value="codex">Codex</option>
+            <option value="antigravity">Antigravity</option>
+            <option value="cursor">Cursor</option>
+          </select>
+        </div>
+
         <nav className="sessions">
-          <div className="rail-sec-label">
-            <span>ASD 오케스트레이션 세션</span>
-            <span>{list.length}</span>
-          </div>
-
-          {list.length === 0 && (
-            <div className="rail-empty">
-              {q ? "일치하는 ASD 세션이 없습니다" : "첫 세션을 시작해 보세요"}
-            </div>
-          )}
-
-          {list.map((c, i) => {
-            const isActive =
-              !activeCliSession && c.id === foregroundSessionId && !app.newSessionMode;
-            const hLabel =
-              HARNESS_LABEL[(c.harness as HarnessId) ?? "claude-code"] ??
-              c.harness ??
-              "";
-            return (
-              <div
-                key={c.id}
-                className={`session ${isActive ? "on" : ""} ${busy.has(c.id) ? "busy" : ""}`}
-                style={{ "--i": i } as CSSProperties}
-                onClick={() => {
-                  openSession(c.id);
-                  if (window.innerWidth < 960) onPicked();
-                }}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    openSession(c.id);
-                    if (window.innerWidth < 960) onPicked();
-                  }
-                }}
-              >
-                <div className="session-title" title={c.title}>
-                  {c.title}
-                </div>
-                <div className="session-meta">
-                  <span
-                    className="session-folder"
-                    title={c.workspaceDir ?? "기본 작업 폴더"}
-                  >
-                    <FolderIcon />{" "}
-                    {c.workspaceDir ? baseName(c.workspaceDir) : "기본 폴더"}
-                  </span>
-                  {hLabel && <span className="rail-chip">{hLabel}</span>}
-                  {c.phase && <span className="rail-chip">{c.phase}</span>}
-                  <span>{busy.has(c.id) ? "작업 중" : ago(c.updatedAt)}</span>
-                </div>
+          {viewFilter !== "cli" && (
+            <>
+              <div className="rail-sec-label">
+                <span>ASD 오케스트레이션 세션</span>
+                <span>{list.length}</span>
               </div>
-            );
-          })}
 
-          <div className="rail-sec-label" style={{ marginTop: 12 }}>
-            <span>현재 프로젝트 일반 CLI 세션</span>
-            <span>{cliSessions.length}</span>
-          </div>
+              {list.length === 0 && (
+                <div className="rail-empty">
+                  {q ? "일치하는 ASD 세션이 없습니다" : "첫 세션을 시작해 보세요"}
+                </div>
+              )}
 
-          {cliSessions.length === 0 ? (
-            <div className="rail-empty" style={{ padding: "10px 8px" }}>
-              감지된 일반 CLI 세션이 없습니다
-            </div>
-          ) : (
-            cliSessions.map((entry, idx) => {
-              const isSelectedCli =
-                activeCliSession?.harnessSessionId === entry.harnessSessionId &&
-                activeCliSession?.harness === entry.harness;
-              const hLabel =
-                HARNESS_LABEL[entry.harness as HarnessId] ?? entry.harness;
-              const titleText =
-                entry.summary?.trim() ||
-                `${hLabel} (${entry.harnessSessionId.slice(0, 8)})`;
-
-              return (
-                <div
-                  key={`${entry.harness}::${entry.harnessSessionId}`}
-                  className={`session cli-session ${isSelectedCli ? "on" : ""}`}
-                  style={{ "--i": idx } as CSSProperties}
-                  onClick={() => {
-                    selectCliSession(entry);
-                    if (window.innerWidth < 960) onPicked();
-                  }}
-                  role="button"
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      selectCliSession(entry);
-                      if (window.innerWidth < 960) onPicked();
-                    }
-                  }}
-                >
-                  <div className="session-title" title={titleText}>
-                    {titleText}
-                  </div>
-                  <div className="session-meta">
-                    <span className="rail-chip accent">{hLabel}</span>
-                    {entry.model && (
-                      <span className="rail-chip" title={entry.model}>
-                        {entry.model.slice(0, 16)}
-                      </span>
-                    )}
-                    {entry.asdSessionId && (
-                      <span className="rail-chip ok" title={`연결된 ASD 세션: ${entry.asdSessionId}`}>
-                        ASD 연결됨
-                      </span>
-                    )}
-                    <span>{ago(entry.updatedAt || entry.startedAt)}</span>
-                  </div>
+              {list.map((c, i) => {
+                const isActive =
+                  !activeCliSession && c.id === foregroundSessionId && !app.newSessionMode;
+                const hLabel =
+                  HARNESS_LABEL[(c.harness as HarnessId) ?? "claude-code"] ??
+                  c.harness ??
+                  "";
+                return (
                   <div
-                    className="cli-session-actions"
-                    onClick={(e) => e.stopPropagation()}
+                    key={c.id}
+                    className={`session ${isActive ? "on" : ""} ${busy.has(c.id) ? "busy" : ""}`}
+                    style={{ "--i": i } as CSSProperties}
+                    onClick={() => {
+                      openSession(c.id);
+                      if (window.innerWidth < 960) onPicked();
+                    }}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        openSession(c.id);
+                        if (window.innerWidth < 960) onPicked();
+                      }
+                    }}
                   >
-                    <button
-                      type="button"
-                      className="btn xs"
-                      title="이 일반 CLI 세션을 새 ASD 오케스트레이션 세션으로 승격"
-                      onClick={() => void promoteCliSessionToAsd(entry)}
+                    <div className="session-title" title={c.title}>
+                      {c.title}
+                    </div>
+                    <div className="session-meta">
+                      <span
+                        className="session-folder"
+                        title={c.workspaceDir ?? "기본 작업 폴더"}
+                      >
+                        <FolderIcon />{" "}
+                        {c.workspaceDir ? baseName(c.workspaceDir) : "기본 폴더"}
+                      </span>
+                      {hLabel && <span className="rail-chip">{hLabel}</span>}
+                      {c.phase && <span className="rail-chip">{c.phase}</span>}
+                      <span>{busy.has(c.id) ? "작업 중" : ago(c.updatedAt)}</span>
+                    </div>
+                    <div
+                      className="cli-session-actions"
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      ASD 승격
-                    </button>
-                    {foregroundSessionId && (
+                      {c.harnessSessionId && (
+                        <button
+                          type="button"
+                          className="btn xs ghost"
+                          title="ASD 세션을 해제하고 원래 하네스의 일반 CLI 세션으로 하강"
+                          onClick={() =>
+                            void demoteSession(c.id, { deleteAsdSession: true })
+                          }
+                        >
+                          CLI 하강
+                        </button>
+                      )}
+                      {c.harness && (
+                        <button
+                          type="button"
+                          className="btn xs ghost"
+                          title="하단 PTY 터미널에서 열기"
+                          onClick={() =>
+                            openTerminalTab({
+                              title: `${hLabel} (${(c.harnessSessionId ?? c.id).slice(0, 8)})`,
+                              cwd: c.workspaceDir ?? app.projectRoot ?? undefined,
+                              harness: c.harness as HarnessId,
+                              harnessSessionId: c.harnessSessionId ?? undefined,
+                              model: c.model ?? undefined,
+                            })
+                          }
+                        >
+                          <TerminalIcon />
+                        </button>
+                      )}
                       <button
                         type="button"
                         className="btn xs ghost"
-                        title="현재 전경 ASD 세션의 메인 드라이버로 연결"
-                        onClick={() => void attachCliSessionToCurrentAsd(entry)}
+                        title="이 ASD 세션 기록 삭제 (하네스 원본 대화는 유지됨)"
+                        onClick={() => void deleteSession(c.id)}
                       >
-                        <LinkIcon /> 드라이버 연결
+                        삭제
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      className="btn xs ghost"
-                      title="하단 PTY 터미널에서 대화형으로 재개"
+                    </div>
+                  </div>
+                );
+              })}
+            </>
+          )}
+
+          {viewFilter !== "asd" && (
+            <>
+              <div className="rail-sec-label" style={{ marginTop: viewFilter === "all" ? 12 : 0 }}>
+                <span>현재 프로젝트 일반 CLI 세션</span>
+                <span>{cliSessions.length}</span>
+              </div>
+
+              {cliSessions.length === 0 ? (
+                <div className="rail-empty" style={{ padding: "10px 8px" }}>
+                  감지된 일반 CLI 세션이 없습니다
+                </div>
+              ) : (
+                cliSessions.map((entry, idx) => {
+                  const isSelectedCli =
+                    activeCliSession?.harnessSessionId === entry.harnessSessionId &&
+                    activeCliSession?.harness === entry.harness;
+                  const hLabel =
+                    HARNESS_LABEL[entry.harness as HarnessId] ?? entry.harness;
+                  const titleText =
+                    entry.summary?.trim() ||
+                    `${hLabel} (${entry.harnessSessionId.slice(0, 8)})`;
+
+                  return (
+                    <div
+                      key={`${entry.harness}::${entry.harnessSessionId}`}
+                      className={`session cli-session ${isSelectedCli ? "on" : ""}`}
+                      style={{ "--i": idx } as CSSProperties}
                       onClick={() => {
-                        openTerminalTab({
-                          title: `${hLabel} (${entry.harnessSessionId.slice(0, 8)})`,
-                          cwd: app.projectRoot ?? undefined,
-                          harness: entry.harness,
-                          harnessSessionId: entry.harnessSessionId,
-                          model: entry.model ?? undefined,
-                        });
+                        selectCliSession(entry);
+                        if (window.innerWidth < 960) onPicked();
+                      }}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          selectCliSession(entry);
+                          if (window.innerWidth < 960) onPicked();
+                        }
                       }}
                     >
-                      <TerminalIcon />
-                    </button>
-                  </div>
-                </div>
-              );
-            })
+                      <div className="session-title" title={titleText}>
+                        {titleText}
+                      </div>
+                      <div className="session-meta">
+                        <span className="rail-chip accent">{hLabel}</span>
+                        {entry.model && (
+                          <span className="rail-chip" title={entry.model}>
+                            {entry.model.slice(0, 16)}
+                          </span>
+                        )}
+                        {entry.asdSessionId && (
+                          <span className="rail-chip ok" title={`연결된 ASD 세션: ${entry.asdSessionId}`}>
+                            ASD 연결됨
+                          </span>
+                        )}
+                        <span>{ago(entry.updatedAt || entry.startedAt)}</span>
+                      </div>
+                      <div
+                        className="cli-session-actions"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <button
+                          type="button"
+                          className="btn xs"
+                          title="이 일반 CLI 세션을 새 ASD 오케스트레이션 세션으로 승격"
+                          onClick={() => void promoteCliSessionToAsd(entry)}
+                        >
+                          ASD 승격
+                        </button>
+                        {foregroundSessionId && (
+                          <button
+                            type="button"
+                            className="btn xs ghost"
+                            title="현재 전경 ASD 세션의 메인 드라이버로 연결"
+                            onClick={() => void attachCliSessionToCurrentAsd(entry)}
+                          >
+                            <LinkIcon /> 드라이버 연결
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          className="btn xs ghost"
+                          title="하단 PTY 터미널에서 대화형으로 재개"
+                          onClick={() => {
+                            openTerminalTab({
+                              title: `${hLabel} (${entry.harnessSessionId.slice(0, 8)})`,
+                              cwd: app.projectRoot ?? undefined,
+                              harness: entry.harness,
+                              harnessSessionId: entry.harnessSessionId,
+                              model: entry.model ?? undefined,
+                            });
+                          }}
+                        >
+                          <TerminalIcon />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </>
           )}
         </nav>
       </div>

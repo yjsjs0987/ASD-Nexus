@@ -685,16 +685,6 @@ function SessionHead({
         </span>
       </button>
 
-      {cliSession && (
-        <button
-          type="button"
-          className="btn sm primary"
-          onClick={() => void app.promoteCliSessionToAsd(cliSession)}
-        >
-          ASD 세션으로 승격
-        </button>
-      )}
-
       {phaseAction && fg && !isCliView && (
         <button className="btn sm" onClick={() => void app.setPhase(fg.session_id, phaseAction.next)}>
           {phaseAction.label}

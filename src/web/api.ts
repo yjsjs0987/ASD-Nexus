@@ -23,6 +23,12 @@ import type {
   // Sessions
   CreateSessionRequest,
   CreateSessionResponse,
+  PromoteSessionRequest,
+  PromoteSessionResponse,
+  DemoteSessionRequest,
+  DemoteSessionResponse,
+  DeleteSessionRequest,
+  DeleteSessionResponse,
   SaveSessionMemoRequest,
   SaveSessionMemoResponse,
   SetForegroundSessionRequest,
@@ -155,6 +161,33 @@ export async function createSession(
   req: CreateSessionRequest
 ): Promise<CreateSessionResponse> {
   return fetchJson("/api/sessions/create", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export async function promoteSession(
+  req: PromoteSessionRequest
+): Promise<PromoteSessionResponse> {
+  return fetchJson("/api/sessions/promote", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export async function demoteSession(
+  req: DemoteSessionRequest
+): Promise<DemoteSessionResponse> {
+  return fetchJson("/api/sessions/demote", {
+    method: "POST",
+    body: JSON.stringify(req),
+  });
+}
+
+export async function deleteSession(
+  req: DeleteSessionRequest
+): Promise<DeleteSessionResponse> {
+  return fetchJson("/api/sessions/delete", {
     method: "POST",
     body: JSON.stringify(req),
   });
@@ -377,6 +410,12 @@ export type {
   // Sessions
   CreateSessionRequest,
   CreateSessionResponse,
+  PromoteSessionRequest,
+  PromoteSessionResponse,
+  DemoteSessionRequest,
+  DemoteSessionResponse,
+  DeleteSessionRequest,
+  DeleteSessionResponse,
   SaveSessionMemoRequest,
   SaveSessionMemoResponse,
   SetForegroundSessionRequest,

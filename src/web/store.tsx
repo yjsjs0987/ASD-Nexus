@@ -47,6 +47,8 @@ export interface SessionInfo {
   updatedAt: string;
   phase?: string;
   harness?: string;
+  harnessSessionId?: string | null;
+  model?: string | null;
 }
 
 export interface OpenTerminalParams {
@@ -75,6 +77,10 @@ interface AppCtx {
   selectedDriverId: string | null;
   setSelectedDriverId: (driverId: string | null) => void;
   promoteCliSessionToAsd: (entry: CliRecentSessionEntry) => Promise<string | null>;
+  demoteSession: (
+    sessionId: string,
+    opts?: { deleteAsdSession?: boolean },
+  ) => Promise<api.DemoteSessionResponse | null>;
   attachCliSessionToCurrentAsd: (entry: CliRecentSessionEntry) => Promise<void>;
 
   // ── 하네스/모델 모달 & 모델 새로고침 ──
@@ -372,8 +378,19 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSelectedDriverIdState(driverId);
   }, []);
 
-  const deleteSession = useCallback(async () => {
-    setError("세션 삭제는 아직 지원하지 않습니다(서버 API 미구현).");
+  const deleteSession = useCallback(async (sessionId: string) => {
+    const p = projectRef.current;
+    if (!p || !sessionId) return;
+    try {
+      await api.deleteSession({ projectRoot: p, sessionId });
+      const snap = await api.getSessionState(p);
+      setSnapshot(snap);
+      setSelectedSessionId(
+        snap.foregroundSessionId ?? snap.session?.session_id ?? null,
+      );
+    } catch (e) {
+      setError(api.errorText(e));
+    }
   }, []);
 
   const createSession = useCallback(
@@ -422,29 +439,75 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const memoText =
           entry.summary?.trim().slice(0, 75) ||
           `${effectiveHarness} (${entry.harnessSessionId.slice(0, 8)})`;
-        const created = await api.createSession({
+        const promoted = await api.promoteSession({
           projectRoot: p,
           harness: effectiveHarness,
-          model: entry.model ?? undefined,
+          harnessSessionId: entry.harnessSessionId,
+          model: entry.model ?? null,
           memo: memoText,
+          transcriptPath: entry.transcriptPath ?? null,
+          asdSessionId: entry.asdSessionId ?? undefined,
           makeForeground: true,
         });
-        await api.attachDriver({
-          projectRoot: p,
-          sessionId: created.sessionId,
-          harness: effectiveHarness,
-          model: entry.model ?? undefined,
-          harnessSessionId: entry.harnessSessionId,
-          source: "cli-asd",
-        });
-        setSelectedSessionId(created.sessionId);
+        setSelectedSessionId(promoted.sessionId);
         setActiveCliSession(null);
         setSelectedDriverIdState(null);
         setNewSessionMode(false);
         const snap = await api.getSessionState(p);
         setSnapshot(snap);
-        setSelectedSessionId(created.sessionId);
-        return created.sessionId;
+        setSelectedSessionId(promoted.sessionId);
+        return promoted.sessionId;
+      } catch (e) {
+        setError(api.errorText(e));
+        return null;
+      }
+    },
+    [],
+  );
+
+  const demoteSession = useCallback(
+    async (
+      sessionId: string,
+      opts?: { deleteAsdSession?: boolean },
+    ): Promise<api.DemoteSessionResponse | null> => {
+      const p = projectRef.current;
+      if (!p || !sessionId) return null;
+      try {
+        const res = await api.demoteSession({
+          projectRoot: p,
+          sessionId,
+          deleteAsdSession: opts?.deleteAsdSession ?? true,
+        });
+        const snap = await api.getSessionState(p);
+        setSnapshot(snap);
+        if (res.harnessSessionId) {
+          const matchedCli = (snap.cliRecentSessions ?? []).find(
+            (c) =>
+              c.harnessSessionId === res.harnessSessionId &&
+              c.harness === res.harness,
+          );
+          if (matchedCli) {
+            setActiveCliSession(matchedCli);
+          } else {
+            setActiveCliSession({
+              harnessSessionId: res.harnessSessionId,
+              harness: res.harness,
+              model: res.model,
+              summary: "",
+              transcriptPath: null,
+              asdSessionId: null,
+              projectRoot: p,
+              startedAt: Date.now(),
+              updatedAt: Date.now(),
+            });
+          }
+        }
+        if (opts?.deleteAsdSession ?? true) {
+          setSelectedSessionId(
+            snap.foregroundSessionId ?? snap.session?.session_id ?? null,
+          );
+        }
+        return res;
       } catch (e) {
         setError(api.errorText(e));
         return null;
@@ -582,6 +645,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         updatedAt: new Date(s.updated_at || s.created_at).toISOString(),
         phase: s.phase,
         harness: s.main_harness,
+        harnessSessionId: s.harness_session_id,
+        model: s.main_model,
       }));
   }, [snapshot]);
 
@@ -621,6 +686,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       selectedDriverId,
       setSelectedDriverId,
       promoteCliSessionToAsd,
+      demoteSession,
       attachCliSessionToCurrentAsd,
       showHarnessModal,
       setShowHarnessModal,
@@ -662,6 +728,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       selectedDriverId,
       setSelectedDriverId,
       promoteCliSessionToAsd,
+      demoteSession,
       attachCliSessionToCurrentAsd,
       showHarnessModal,
       refreshModels,

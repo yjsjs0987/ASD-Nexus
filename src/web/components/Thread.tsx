@@ -2,10 +2,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import * as api from "../api.ts";
 import { useApp, type HarnessId, type LiveJob } from "../store";
-import { useWsDriverOutputChunk, useWsSubagentLogChunk } from "../events.ts";
-import type { JobKind, TranscriptMessage } from "../../shared/protocol.ts";
+import {
+  useWsDriverOutputChunk,
+  useWsDriverStreamEvent,
+  useWsSubagentLogChunk,
+} from "../events.ts";
+import type {
+  JobKind,
+  TranscriptMessage,
+  TranscriptToolResultItem,
+  TranscriptToolUseItem,
+} from "../../shared/protocol.ts";
 import Markdown from "./Markdown";
-import { ChevronIcon, CopyIcon, LinkIcon, RefreshIcon, TerminalIcon } from "./Icons";
+import { ChevronIcon, CopyIcon, LinkIcon, RefreshIcon } from "./Icons";
 import { HARNESS_LABEL } from "./DriverBar.tsx";
 
 const KIND_LABEL: Record<JobKind, string> = {
@@ -177,55 +186,204 @@ function parseAssistantThinking(rawText: string): {
   };
 }
 
-function AssistantMessageBody({ text }: { text: string }) {
-  const { thinkingBlocks, mainText } = useMemo(
-    () => parseAssistantThinking(text),
-    [text],
-  );
-  const [expanded, setExpanded] = useState(false);
+function ThinkingCollapsible({
+  thinkingText,
+  defaultOpen = false,
+  isLive = false,
+}: {
+  thinkingText: string;
+  defaultOpen?: boolean;
+  isLive?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultOpen);
+  const trimmed = thinkingText.trim();
+  if (!trimmed) return null;
 
-  if (thinkingBlocks.length === 0) {
-    return <Markdown text={text} />;
-  }
-
-  const combinedThinking = thinkingBlocks.join("\n\n---\n\n");
-  const lineCount = combinedThinking.split(/\r?\n/).length;
+  const lineCount = trimmed.split(/\r?\n/).length;
   const previewLine =
-    thinkingBlocks[0]
-      ?.split(/\r?\n/)
+    trimmed
+      .split(/\r?\n/)
       .find((l) => l.trim().length > 0)
       ?.replace(/^[#*>-]+\s*/, "")
       .trim()
       .slice(0, 90) ?? "";
 
   return (
-    <div className="asd-assistant-body">
-      <div className={`asd-thinking-box ${expanded ? "open" : "collapsed"}`}>
-        <button
-          type="button"
-          className="asd-thinking-head"
-          onClick={() => setExpanded((v) => !v)}
-          aria-expanded={expanded}
-        >
-          <span className="asd-thinking-badge">
-            💭 사고 과정 (Thinking)
-            {thinkingBlocks.length > 1 ? ` · ${thinkingBlocks.length}단계` : ""}
-            <span className="asd-thinking-meta">{lineCount}줄</span>
-          </span>
-          {!expanded && previewLine && (
-            <span className="asd-thinking-preview">{previewLine}…</span>
-          )}
-          <span className="asd-thinking-toggle">
-            {expanded ? "접기" : "펼치기"} <ChevronIcon open={expanded} />
-          </span>
-        </button>
-        {expanded && (
-          <div className="asd-thinking-body">
-            <Markdown text={combinedThinking} />
-          </div>
+    <div className={`asd-thinking-box ${expanded ? "open" : "collapsed"}`}>
+      <button
+        type="button"
+        className="asd-thinking-head"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+      >
+        <span className="asd-thinking-badge">
+          💭 {isLive ? "실시간 사고 과정 (Thinking…)" : "사고 과정 (Thinking)"}
+          <span className="asd-thinking-meta">{lineCount}줄</span>
+        </span>
+        {!expanded && previewLine && (
+          <span className="asd-thinking-preview">{previewLine}…</span>
         )}
-      </div>
-      {mainText && <Markdown text={mainText} />}
+        <span className="asd-thinking-toggle">
+          {expanded ? "접기" : "펼치기"} <ChevronIcon open={expanded} />
+        </span>
+      </button>
+      {expanded && (
+        <div className="asd-thinking-body">
+          <Markdown text={trimmed} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ToolActivityBox({
+  toolUse,
+  toolResult,
+  defaultOpen = false,
+}: {
+  toolUse?: TranscriptToolUseItem[];
+  toolResult?: TranscriptToolResultItem[];
+  defaultOpen?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(defaultOpen);
+  const uses = toolUse ?? [];
+  const results = toolResult ?? [];
+  if (uses.length === 0 && results.length === 0) return null;
+
+  const hasError = results.some((r) => r.isError);
+  const toolNames = Array.from(
+    new Set([
+      ...uses.map((u) => u.name),
+      ...results.map((r) => r.name).filter((n): n is string => Boolean(n)),
+    ]),
+  );
+  const summaryLabel =
+    toolNames.length > 0
+      ? toolNames.slice(0, 3).join(", ") +
+        (toolNames.length > 3 ? ` 외 ${toolNames.length - 3}개` : "")
+      : `도구 결과 ${results.length}건`;
+
+  const firstInputPreview = uses[0]?.input
+    ? uses[0].input.replace(/\s+/g, " ").trim().slice(0, 80)
+    : results[0]?.output
+      ? results[0].output.replace(/\s+/g, " ").trim().slice(0, 80)
+      : "";
+
+  return (
+    <div className={`asd-thinking-box asd-tool-box ${expanded ? "open" : "collapsed"}`}>
+      <button
+        type="button"
+        className="asd-thinking-head"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+      >
+        <span className="asd-thinking-badge">
+          🔧 도구 사용 (Tool Use) · <code>{summaryLabel}</code>
+          {uses.length > 0 && (
+            <span className="asd-thinking-meta">{uses.length}회 호출</span>
+          )}
+          {hasError && <span className="tag err">오류</span>}
+        </span>
+        {!expanded && firstInputPreview && (
+          <span className="asd-thinking-preview">{firstInputPreview}</span>
+        )}
+        <span className="asd-thinking-toggle">
+          {expanded ? "접기" : "펼치기"} <ChevronIcon open={expanded} />
+        </span>
+      </button>
+      {expanded && (
+        <div className="asd-thinking-body" style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {uses.map((u, idx) => {
+            const matchedRes =
+              (u.id ? results.find((r) => r.toolUseId === u.id) : undefined) ??
+              (uses.length === results.length ? results[idx] : undefined);
+            return (
+              <div key={u.id ?? `tu-${idx}`} className="asd-tool-item">
+                <div className="row" style={{ gap: 6, marginBottom: 4 }}>
+                  <span className="tag work">🔧 {u.name}</span>
+                  {u.id && <code className="asd-dim" style={{ fontSize: 11 }}>{u.id}</code>}
+                  {matchedRes && (
+                    <span className={`tag ${matchedRes.isError ? "err" : "ok"}`}>
+                      {matchedRes.isError ? "실패" : "완료"}
+                    </span>
+                  )}
+                </div>
+                {u.input && (
+                  <pre className="asd-sublog" style={{ margin: "4px 0", maxHeight: 160, overflow: "auto" }}>
+                    {u.input.slice(0, 1200)}
+                  </pre>
+                )}
+                {matchedRes?.output && (
+                  <pre className="asd-sublog" style={{ margin: "4px 0", maxHeight: 180, overflow: "auto", opacity: 0.9 }}>
+                    {matchedRes.output.slice(0, 1500)}
+                  </pre>
+                )}
+              </div>
+            );
+          })}
+          {uses.length === 0 &&
+            results.map((r, idx) => (
+              <div key={r.toolUseId ?? `tr-${idx}`} className="asd-tool-item">
+                <div className="row" style={{ gap: 6, marginBottom: 4 }}>
+                  <span className={`tag ${r.isError ? "err" : "ok"}`}>
+                    📥 도구 결과 {r.name ? `· ${r.name}` : ""}
+                  </span>
+                  {r.toolUseId && (
+                    <code className="asd-dim" style={{ fontSize: 11 }}>{r.toolUseId}</code>
+                  )}
+                </div>
+                {r.output && (
+                  <pre className="asd-sublog" style={{ margin: "4px 0", maxHeight: 180, overflow: "auto" }}>
+                    {r.output.slice(0, 1500)}
+                  </pre>
+                )}
+              </div>
+            ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssistantMessageBody({
+  text,
+  thinking,
+  toolUse,
+  toolResult,
+  category,
+}: {
+  text: string;
+  thinking?: string;
+  toolUse?: TranscriptToolUseItem[];
+  toolResult?: TranscriptToolResultItem[];
+  category?: TranscriptMessage["category"];
+}) {
+  const { thinkingBlocks, mainText } = useMemo(
+    () => parseAssistantThinking(text),
+    [text],
+  );
+
+  const allThinking = useMemo(() => {
+    const parts: string[] = [];
+    if (thinking && thinking.trim()) parts.push(thinking.trim());
+    for (const b of thinkingBlocks) {
+      if (b && !parts.includes(b)) parts.push(b);
+    }
+    return parts.join("\n\n---\n\n");
+  }, [thinking, thinkingBlocks]);
+
+  const effectiveMainText =
+    category === "thinking" && allThinking && mainText.trim() === allThinking.trim()
+      ? ""
+      : mainText;
+
+  return (
+    <div className="asd-assistant-body">
+      {allThinking && <ThinkingCollapsible thinkingText={allThinking} />}
+      {((toolUse && toolUse.length > 0) || (toolResult && toolResult.length > 0)) && (
+        <ToolActivityBox toolUse={toolUse} toolResult={toolResult} />
+      )}
+      {effectiveMainText && <Markdown text={effectiveMainText} />}
     </div>
   );
 }
@@ -442,6 +600,9 @@ export default function Thread() {
 
   // Live streaming state for active job
   const [output, setOutput] = useState("");
+  const [liveThinking, setLiveThinking] = useState("");
+  const [liveToolUses, setLiveToolUses] = useState<TranscriptToolUseItem[]>([]);
+  const [liveToolResults, setLiveToolResults] = useState<TranscriptToolResultItem[]>([]);
   const [subLog, setSubLog] = useState("");
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -450,6 +611,9 @@ export default function Thread() {
   useEffect(() => {
     runRef.current = mine?.runId ?? null;
     setOutput("");
+    setLiveThinking("");
+    setLiveToolUses([]);
+    setLiveToolResults([]);
     setSubLog("");
   }, [fgId, mine?.runId]);
 
@@ -460,6 +624,45 @@ export default function Thread() {
       setOutput(p.chunk);
     } else {
       setOutput((o) => o + p.chunk);
+    }
+  });
+
+  useWsDriverStreamEvent((p) => {
+    if (p.sessionId !== fgId && p.sessionId !== baseSessionId) return;
+    if (runRef.current && p.runId && runRef.current !== p.runId) {
+      runRef.current = p.runId;
+      setLiveThinking("");
+      setLiveToolUses([]);
+      setLiveToolResults([]);
+    }
+    const ev = p.event;
+    if (ev.type === "thinking" && ev.thinking) {
+      setLiveThinking((prev) =>
+        prev
+          ? prev.endsWith(ev.thinking!)
+            ? prev
+            : `${prev}\n${ev.thinking!}`
+          : ev.thinking!,
+      );
+    } else if (ev.type === "tool_use" && ev.toolName) {
+      setLiveToolUses((prev) => [
+        ...prev,
+        {
+          id: ev.toolId,
+          name: ev.toolName!,
+          input: ev.toolInput,
+        },
+      ]);
+    } else if (ev.type === "tool_result" && ev.toolOutput !== undefined) {
+      setLiveToolResults((prev) => [
+        ...prev,
+        {
+          toolUseId: ev.toolId,
+          name: ev.toolName,
+          output: ev.toolOutput!,
+          isError: ev.isError,
+        },
+      ]);
     }
   });
 
@@ -578,59 +781,6 @@ export default function Thread() {
       aria-live="polite"
     >
       <div className="thread-inner">
-        {/* Standalone CLI session banner */}
-        {activeCli && (
-          <div className="card asd-cli-banner">
-            <div className="asd-info-head" style={{ justifyContent: "space-between" }}>
-              <div className="row" style={{ gap: 8 }}>
-                <span className="tag ok">
-                  일반 CLI 세션 · {HARNESS_LABEL[activeCli.harness] ?? activeCli.harness}
-                </span>
-                {activeCli.model && <code>{activeCli.model}</code>}
-                <code className="asd-dim">{activeCli.harnessSessionId}</code>
-              </div>
-              <div className="row" style={{ gap: 6 }}>
-                <button
-                  type="button"
-                  className="btn sm primary"
-                  onClick={() => void app.promoteCliSessionToAsd(activeCli)}
-                >
-                  ASD 세션으로 승격
-                </button>
-                {fgId && (
-                  <button
-                    type="button"
-                    className="btn sm"
-                    onClick={() => void app.attachCliSessionToCurrentAsd(activeCli)}
-                  >
-                    <LinkIcon /> 현재 ASD 세션에 연결
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="btn sm ghost"
-                  onClick={() =>
-                    app.openTerminalTab({
-                      title: `${HARNESS_LABEL[activeCli.harness] ?? activeCli.harness} (${activeCli.harnessSessionId.slice(0, 8)})`,
-                      cwd: projectRoot ?? undefined,
-                      harness: activeCli.harness,
-                      harnessSessionId: activeCli.harnessSessionId,
-                      model: activeCli.model ?? undefined,
-                    })
-                  }
-                >
-                  <TerminalIcon /> PTY 터미널로 열기
-                </button>
-              </div>
-            </div>
-            {activeCli.summary && (
-              <div className="asd-dim" style={{ fontSize: 12.5 }}>
-                {activeCli.summary}
-              </div>
-            )}
-          </div>
-        )}
-
         {/* Driver transcript switcher when multiple drivers exist */}
         {!activeCli && targets.length > 0 && (
           <div className="asd-tx-toolbar">
@@ -702,24 +852,71 @@ export default function Thread() {
 
         {/* Actual Conversation Messages from Harness Transcript */}
         {messages.map((m) => {
-          const isUser = m.role === "user";
-          const isSystem = m.role === "system" || m.role === "tool";
+          const cat = m.category;
+          const isUser =
+            cat === "user" ||
+            (m.role === "user" &&
+              cat !== "tool_result" &&
+              !(m.toolResult && m.toolResult.length > 0 && !m.text.trim()));
+          const isToolOnly =
+            cat === "tool_use" ||
+            cat === "tool_result" ||
+            m.role === "tool";
+          const isThinkingOnly = cat === "thinking" && !m.text.trim();
+          const isSystem = cat === "system" || m.role === "system";
+          const harnessTitle = currentTarget
+            ? HARNESS_LABEL[currentTarget.harness] ?? currentTarget.harness
+            : "어시스턴트";
+
           return (
             <article
-              key={`${m.index}-${m.role}`}
-              className={`card asd-msg-card ${isUser ? "asd-msg-user" : isSystem ? "asd-msg-sys" : "asd-msg-assistant"}`}
+              key={`${m.index}-${m.role}-${cat ?? ""}`}
+              className={`card asd-msg-card ${
+                isUser
+                  ? "asd-msg-user"
+                  : isSystem || isToolOnly
+                    ? "asd-msg-sys"
+                    : "asd-msg-assistant"
+              }`}
             >
               <header className="card-ask">
-                <div className="row" style={{ gap: 8 }}>
-                  <span className={`tag ${isUser ? "work" : isSystem ? "" : "ok"}`}>
+                <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
+                  <span
+                    className={`tag ${
+                      isUser
+                        ? "work"
+                        : isToolOnly
+                          ? ""
+                          : isThinkingOnly
+                            ? "warn"
+                            : isSystem
+                              ? ""
+                              : "ok"
+                    }`}
+                  >
                     {isUser
-                      ? "사용자"
-                      : isSystem
-                        ? m.role.toUpperCase()
-                        : currentTarget
-                          ? HARNESS_LABEL[currentTarget.harness] ?? currentTarget.harness
-                          : "어시스턴트"}
+                      ? "👤 사용자 (User)"
+                      : isToolOnly
+                        ? "🔧 도구 실행 (Tool Use)"
+                        : isThinkingOnly
+                          ? `💭 사고 과정 · ${harnessTitle}`
+                          : isSystem
+                            ? "SYSTEM"
+                            : `💬 응답 · ${harnessTitle}`}
                   </span>
+                  {!isUser && m.thinking && !isThinkingOnly && (
+                    <span className="tag" style={{ fontSize: 11 }}>
+                      💭 Thinking 포함
+                    </span>
+                  )}
+                  {!isUser &&
+                    ((m.toolUse && m.toolUse.length > 0) ||
+                      (m.toolResult && m.toolResult.length > 0)) &&
+                    !isToolOnly && (
+                      <span className="tag" style={{ fontSize: 11 }}>
+                        🔧 Tool Use ({m.toolUse?.length || m.toolResult?.length || 1})
+                      </span>
+                    )}
                   {!isUser && currentTarget?.model && (
                     <code className="asd-dim" style={{ fontSize: 11.5 }}>
                       {currentTarget.model}
@@ -735,7 +932,11 @@ export default function Thread() {
                   type="button"
                   className="foot-btn"
                   title="메시지 복사"
-                  onClick={() => void navigator.clipboard?.writeText(m.text)}
+                  onClick={() =>
+                    void navigator.clipboard?.writeText(
+                      m.text || m.thinking || JSON.stringify(m.toolUse ?? m.toolResult ?? ""),
+                    )
+                  }
                 >
                   <CopyIcon />
                 </button>
@@ -744,7 +945,13 @@ export default function Thread() {
                 {isUser ? (
                   <div className="asd-user-text">{m.text}</div>
                 ) : (
-                  <AssistantMessageBody text={m.text} />
+                  <AssistantMessageBody
+                    text={m.text}
+                    thinking={m.thinking}
+                    toolUse={m.toolUse}
+                    toolResult={m.toolResult}
+                    category={m.category}
+                  />
                 )}
               </div>
             </article>
@@ -762,19 +969,33 @@ export default function Thread() {
             </header>
             <Ribbon nodes={jobNodes(mine)} />
             <div className="card-body">
+              {liveThinking && (
+                <ThinkingCollapsible
+                  thinkingText={liveThinking}
+                  defaultOpen={true}
+                  isLive={running}
+                />
+              )}
+              {(liveToolUses.length > 0 || liveToolResults.length > 0) && (
+                <ToolActivityBox
+                  toolUse={liveToolUses}
+                  toolResult={liveToolResults}
+                  defaultOpen={true}
+                />
+              )}
               {output ? (
                 <AssistantMessageBody text={output} />
-              ) : running ? (
+              ) : running && !liveThinking && liveToolUses.length === 0 ? (
                 <div className="typing" aria-label="준비 중">
                   <i />
                   <i />
                   <i />
                 </div>
-              ) : (
+              ) : !running && !output ? (
                 <p className="asd-dim" style={{ textAlign: "left" }}>
                   실행이 완료되었습니다.
                 </p>
-              )}
+              ) : null}
               <SubLog lines={subLines} />
             </div>
             <footer className="card-foot">
