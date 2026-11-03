@@ -10,6 +10,7 @@ import {
   attachDriver,
   getActiveDriver,
   listDrivers,
+  parseDriverStreamLine,
   readCliRecentSessions,
   recordCliRecentSession,
   resolveSpawnCommand,
@@ -18,6 +19,7 @@ import {
   setForegroundSession,
   type CommandRunner,
   type DriverRow,
+  type DriverStreamEvent,
   type HarnessId,
 } from "../core-api.ts";
 import {
@@ -160,6 +162,7 @@ function resolveWindowsCliBinary(
 function createGuiDriverCommandRunner(options: {
   harness: HarnessId;
   userExplicitModel: string | null;
+  onStreamEvent: (ev: DriverStreamEvent) => void;
   onAssistantText: (textChunk: string) => void;
   onErrorText: (errChunk: string) => void;
   onSessionId: (sid: string) => void;
@@ -171,7 +174,6 @@ function createGuiDriverCommandRunner(options: {
         let stdinPayload: string | undefined;
 
         // 0. For Antigravity (`agy`), replace legacy `--resume` with `--conversation`
-        //    and strip outdated hardcoded default model `gemini-3.1-pro-high` when no user model was selected.
         if (cmd === "agy" || options.harness === "antigravity") {
           args = args.map((a) => (a === "--resume" ? "--conversation" : a));
         }
@@ -203,7 +205,6 @@ function createGuiDriverCommandRunner(options: {
               args.splice(pIdx + 1, 1);
             }
           }
-          // Move `-p` to the end so flags like `--resume <uuid>` are never consumed by `-p`
           const pFlagIdx = args.indexOf("-p");
           if (pFlagIdx !== -1) {
             args.splice(pFlagIdx, 1);
@@ -214,7 +215,7 @@ function createGuiDriverCommandRunner(options: {
           }
         }
 
-        // 3. For Antigravity (`agy`), pass `--dangerously-skip-permissions` in headless mode so it doesn't hang on interactive prompts
+        // 3. For Antigravity (`agy`), pass `--dangerously-skip-permissions` in headless mode
         if (cmd === "agy" || options.harness === "antigravity") {
           if (!args.includes("--dangerously-skip-permissions")) {
             args.push("--dangerously-skip-permissions");
@@ -255,7 +256,6 @@ function createGuiDriverCommandRunner(options: {
           if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
             try {
               const obj = JSON.parse(trimmed) as Record<string, unknown>;
-              // Extract session ID if present across Claude/OpenCode/Codex/Antigravity/Cursor
               const sid =
                 (typeof obj.session_id === "string" && obj.session_id) ||
                 (typeof obj.sessionID === "string" && obj.sessionID) ||
@@ -277,29 +277,17 @@ function createGuiDriverCommandRunner(options: {
                   typeof obj.status === "string")
               ) {
                 if (obj.response.trim()) {
+                  options.onStreamEvent({
+                    type: "text",
+                    harness: options.harness,
+                    text: obj.response,
+                    timestamp: Date.now(),
+                  });
                   options.onAssistantText?.(obj.response);
                 }
                 return;
               }
 
-              // OpenCode JSON event: {"type":"text","part":{"text":"..."}}
-              if (
-                obj.type === "text" &&
-                obj.part &&
-                typeof obj.part === "object" &&
-                typeof (obj.part as Record<string, unknown>).text === "string"
-              ) {
-                const t = String((obj.part as Record<string, unknown>).text);
-                if (t) options.onAssistantText?.(t);
-                return;
-              }
-              if (
-                obj.type === "step_start" ||
-                obj.type === "step_finish" ||
-                obj.type === "tool_use"
-              ) {
-                return;
-              }
               if (obj.type === "error") {
                 const errObj = obj.error as Record<string, unknown> | undefined;
                 const msg =
@@ -310,31 +298,22 @@ function createGuiDriverCommandRunner(options: {
                 options.onErrorText?.(`${msg}\n`);
                 return;
               }
-
-              // Claude Code JSON result: {"type":"result","subtype":"success","result":"..."}
-              if (obj.type === "result") {
-                if (typeof obj.result === "string" && obj.result.trim()) {
-                  options.onAssistantText?.(obj.result);
-                } else if (obj.is_error && typeof obj.error === "string") {
-                  options.onErrorText?.(`${obj.error}\n`);
-                }
-                return;
-              }
-
-              // Generic assistant message JSON
-              if (
-                typeof obj.text === "string" &&
-                obj.text.trim() &&
-                obj.type !== "user"
-              ) {
-                options.onAssistantText?.(obj.text);
-                return;
-              }
             } catch {
-              // Not valid JSON or partial line; fall through to raw text
+              // Fall through to Core's parseDriverStreamLine
             }
           }
-          options.onAssistantText?.(line + "\n");
+
+          // Delegate structured stream parsing (thinking, tool_use, tool_result, text) to Core v2.4.0
+          const events = parseDriverStreamLine(trimmed, options.harness);
+          for (const ev of events) {
+            if (ev.harnessSessionId) {
+              options.onSessionId(ev.harnessSessionId);
+            }
+            options.onStreamEvent(ev);
+            if (ev.type === "text" && ev.text) {
+              options.onAssistantText(ev.text);
+            }
+          }
         };
 
         child.stdout?.on("data", (chunk: string) => {
@@ -643,12 +622,27 @@ export async function handleDriversRoutes(
 
         try {
           let detectedHarnessSid: string | null = null;
+          const emitStreamEvent = (event: DriverStreamEvent) => {
+            watcher.broadcastToProject(projectRoot, {
+              type: "driver_stream_event",
+              projectRoot,
+              sessionId,
+              runId: placeholderRunId,
+              event,
+            });
+          };
+
           const customRunner =
             context.commandRunner ??
             createGuiDriverCommandRunner({
               harness: driverAtStart.harness as HarnessId,
               userExplicitModel: driverAtStart.model,
+              onStreamEvent: emitStreamEvent,
               onAssistantText: (text) => {
+                // Prevent duplicate full result text if deltas already streamed the same text
+                if (assistantOutput && assistantOutput.trim() === text.trim()) {
+                  return;
+                }
                 assistantOutput += text;
                 emitStreamChunk(text);
               },
@@ -674,7 +668,9 @@ export async function handleDriversRoutes(
                 ? "auto"
                 : "never",
             signal: combinedAbort.signal,
+            streamJson: true,
             commandRunner: customRunner,
+            onEvent: context.commandRunner ? emitStreamEvent : undefined,
             onOutput: context.commandRunner
               ? (chunk) => {
                   assistantOutput += chunk;

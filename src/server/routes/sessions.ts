@@ -5,16 +5,20 @@
 import type * as http from "node:http";
 import {
   attachDriver,
+  buildInteractiveResumeHarnessCommand,
+  buildSessionDemotion,
   detachDriver,
   generateAsdSessionId,
   getActiveDriver,
   handleDebate,
   handlePlan,
+  promoteCliSessionToAsd,
   resolveAsdPaths,
   runSubagentControlAction,
   saveSessionMemo,
   setForegroundSession,
   syncSessionDriversToMainJson,
+  unlinkHarnessSessionFromAsdSession,
   type HarnessId,
   type SessionPhase,
 } from "../core-api.ts";
@@ -34,6 +38,12 @@ import {
 import type {
   CreateSessionRequest,
   CreateSessionResponse,
+  DeleteSessionRequest,
+  DeleteSessionResponse,
+  DemoteSessionRequest,
+  DemoteSessionResponse,
+  PromoteSessionRequest,
+  PromoteSessionResponse,
   SaveSessionMemoRequest,
   SaveSessionMemoResponse,
   SetForegroundSessionRequest,
@@ -110,6 +120,183 @@ export async function handleSessionsRoutes(
       sessionId,
       driver: attached.driver,
       foregroundSessionId: snap?.foregroundSessionId ?? (makeForeground ? sessionId : null),
+    };
+    sendJson(res, 200, response);
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/sessions/promote") {
+    const body = await readJsonBody<PromoteSessionRequest>(req);
+    const projectRoot = validateProjectRoot(body.projectRoot);
+    const harnessSessionId = (body.harnessSessionId ?? "").trim();
+    if (!harnessSessionId) {
+      throw new HttpApiError(
+        400,
+        "INVALID_SESSION_ID",
+        "harnessSessionId is required"
+      );
+    }
+    const harness = (
+      harnessSessionId.startsWith("ses_")
+        ? "opencode"
+        : body.harness || "claude-code"
+    ) as HarnessId;
+    const makeForeground = body.makeForeground ?? true;
+
+    const db = context.getDb(projectRoot);
+    const existingSession = db.findSessionByHarnessSessionId(
+      harnessSessionId,
+      harness
+    );
+    const targetAsdSessionId =
+      body.asdSessionId?.trim() || existingSession?.session_id || undefined;
+
+    const promoted = promoteCliSessionToAsd({
+      projectRoot,
+      homeDir: context.homeDir,
+      harness,
+      harnessSessionId,
+      model: body.model?.trim() || null,
+      memo: body.memo?.trim() || null,
+      transcriptPath: body.transcriptPath?.trim() || null,
+      asdSessionId: targetAsdSessionId,
+      source: "cli-asd",
+      db,
+    });
+
+    if (makeForeground) {
+      setForegroundSession({ db, projectRoot, sessionId: promoted.asdSessionId });
+      setRememberedForegroundSessionId(projectRoot, promoted.asdSessionId);
+    }
+
+    const snap = await watcher.forceBroadcastProject(projectRoot);
+    const response: PromoteSessionResponse = {
+      ok: true,
+      sessionId: promoted.asdSessionId,
+      driverId: promoted.driverId,
+      driver: promoted.driver,
+      harness: promoted.harness,
+      harnessSessionId: promoted.harnessSessionId,
+      model: promoted.model,
+      foregroundSessionId:
+        snap?.foregroundSessionId ??
+        (makeForeground ? promoted.asdSessionId : null),
+    };
+    sendJson(res, 200, response);
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/sessions/demote") {
+    const body = await readJsonBody<DemoteSessionRequest>(req);
+    const projectRoot = validateProjectRoot(body.projectRoot);
+    const rawSid = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+    const splitIdx = rawSid.indexOf("::");
+    const sessionId = validateSessionId(
+      splitIdx !== -1 ? rawSid.slice(0, splitIdx) : rawSid
+    );
+    const deleteAsdSession = body.deleteAsdSession ?? true;
+
+    const db = context.getDb(projectRoot);
+    const sessionRow = db.getSession(sessionId);
+    if (!sessionRow) {
+      throw new HttpApiError(404, "NOT_FOUND", `Session not found: ${sessionId}`);
+    }
+
+    let harness = (sessionRow.main_harness || "claude-code") as HarnessId;
+    let harnessSessionId: string | null = sessionRow.harness_session_id ?? null;
+    let model: string | null = sessionRow.main_model ?? null;
+    let command = "";
+    let args: string[] = [];
+    let cliString = "";
+
+    try {
+      const demotion = buildSessionDemotion({
+        projectRoot,
+        homeDir: context.homeDir,
+        sessionId,
+        db,
+      });
+      harness = demotion.harness;
+      harnessSessionId = demotion.harnessSessionId;
+      model = demotion.model;
+      command = demotion.command;
+      args = demotion.args;
+      cliString = demotion.cliString;
+    } catch {
+      const activeDrv = getActiveDriver(db, sessionId);
+      if (activeDrv) {
+        harness = activeDrv.harness as HarnessId;
+        harnessSessionId = activeDrv.harness_session_id ?? harnessSessionId;
+        model = activeDrv.model ?? model;
+      }
+      const built = buildInteractiveResumeHarnessCommand(
+        harness,
+        harnessSessionId,
+        model
+      );
+      command = built.command;
+      args = built.args;
+      cliString = built.cliString;
+    }
+
+    const unlinkRes = unlinkHarnessSessionFromAsdSession({
+      projectRoot,
+      homeDir: context.homeDir,
+      asdSessionId: sessionId,
+      harnessSessionId: harnessSessionId ?? undefined,
+      harness,
+      deleteAsdSession,
+      db,
+    });
+
+    if (!deleteAsdSession) {
+      db.updateSessionPhase(sessionId, "paused");
+    }
+
+    setRememberedForegroundSessionId(projectRoot, null);
+    await watcher.forceBroadcastProject(projectRoot);
+
+    const response: DemoteSessionResponse = {
+      ok: true,
+      sessionId,
+      harness,
+      harnessSessionId: unlinkRes.harnessSessionId ?? harnessSessionId,
+      model,
+      command,
+      args,
+      cliString,
+      unlinked: unlinkRes.unlinked,
+      deleted: deleteAsdSession,
+    };
+    sendJson(res, 200, response);
+    return true;
+  }
+
+  if (req.method === "POST" && pathname === "/api/sessions/delete") {
+    const body = await readJsonBody<DeleteSessionRequest>(req);
+    const projectRoot = validateProjectRoot(body.projectRoot);
+    const rawSid = typeof body.sessionId === "string" ? body.sessionId.trim() : "";
+    const splitIdx = rawSid.indexOf("::");
+    const sessionId = validateSessionId(
+      splitIdx !== -1 ? rawSid.slice(0, splitIdx) : rawSid
+    );
+
+    const db = context.getDb(projectRoot);
+    unlinkHarnessSessionFromAsdSession({
+      projectRoot,
+      homeDir: context.homeDir,
+      asdSessionId: sessionId,
+      deleteAsdSession: true,
+      db,
+    });
+    const deleted = db.deleteSession(sessionId);
+    setRememberedForegroundSessionId(projectRoot, null);
+    await watcher.forceBroadcastProject(projectRoot);
+
+    const response: DeleteSessionResponse = {
+      ok: true,
+      sessionId,
+      deleted: Boolean(deleted),
     };
     sendJson(res, 200, response);
     return true;

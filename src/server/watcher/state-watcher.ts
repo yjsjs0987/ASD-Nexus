@@ -16,11 +16,10 @@ import * as child_process from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import type { WebSocket } from "ws";
 import {
   collectDashboardSnapshot,
-  discoverHarnessModels,
+  discoverProjectCliSessions,
   getForegroundSessionId,
   recoverOrphanedTasks,
   resolveAsdPaths,
@@ -43,17 +42,35 @@ export interface EnrichedSnapshot extends DashboardSnapshot {
   foregroundSessionId: string | null;
 }
 
+const projectGitInfoCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    value: { isGitRepo: boolean; gitBranch: string | null; gitHeadSha: string | null };
+  }
+>();
+const GIT_INFO_CACHE_TTL_MS = 10_000;
+
 export function getProjectGitInfo(projectRoot: string): {
   isGitRepo: boolean;
   gitBranch: string | null;
   gitHeadSha: string | null;
 } {
+  const key = path.resolve(projectRoot).replaceAll("\\", "/").toLowerCase();
+  const now = Date.now();
+  const cached = projectGitInfoCache.get(key);
+  if (cached && cached.expiresAt > now) {
+    return cached.value;
+  }
+
   try {
     const inside = runGit(["rev-parse", "--is-inside-work-tree"], {
       cwd: projectRoot,
     });
     if (inside.exitCode !== 0 || inside.stdout.trim() !== "true") {
-      return { isGitRepo: false, gitBranch: null, gitHeadSha: null };
+      const value = { isGitRepo: false, gitBranch: null, gitHeadSha: null };
+      projectGitInfoCache.set(key, { expiresAt: now + GIT_INFO_CACHE_TTL_MS, value });
+      return value;
     }
     const branchRes = runGit(["rev-parse", "--abbrev-ref", "HEAD"], {
       cwd: projectRoot,
@@ -61,13 +78,17 @@ export function getProjectGitInfo(projectRoot: string): {
     const shaRes = runGit(["rev-parse", "--short", "HEAD"], {
       cwd: projectRoot,
     });
-    return {
+    const value = {
       isGitRepo: true,
       gitBranch: branchRes.exitCode === 0 ? branchRes.stdout.trim() : null,
       gitHeadSha: shaRes.exitCode === 0 ? shaRes.stdout.trim() : null,
     };
+    projectGitInfoCache.set(key, { expiresAt: now + GIT_INFO_CACHE_TTL_MS, value });
+    return value;
   } catch {
-    return { isGitRepo: false, gitBranch: null, gitHeadSha: null };
+    const value = { isGitRepo: false, gitBranch: null, gitHeadSha: null };
+    projectGitInfoCache.set(key, { expiresAt: now + GIT_INFO_CACHE_TTL_MS, value });
+    return value;
   }
 }
 
@@ -167,8 +188,12 @@ function runCliLinesAsync(bin: string, args: string[], timeoutMs = 4500): Promis
   });
 }
 
-export async function refreshAsyncCliModels(): Promise<void> {
-  if (asyncCliScanInFlight) return asyncCliScanInFlight;
+export async function refreshAsyncCliModels(force = false): Promise<boolean> {
+  if (asyncCliScanCompleted && !force) return false;
+  if (asyncCliScanInFlight) {
+    await asyncCliScanInFlight;
+    return true;
+  }
   asyncCliScanInFlight = (async () => {
     const [agyLines, opencodeLines] = await Promise.all([
       runCliLinesAsync("agy", ["models"]),
@@ -198,7 +223,8 @@ export async function refreshAsyncCliModels(): Promise<void> {
   })().finally(() => {
     asyncCliScanInFlight = null;
   });
-  return asyncCliScanInFlight;
+  await asyncCliScanInFlight;
+  return true;
 }
 
 function normalizeModelId(raw: string): string {
@@ -316,16 +342,15 @@ export function buildMergedModelCatalog(
   };
 }
 
-function discoverExtraCliSessionsForProject(
+function mergeDiscoveredCliSessions(
   projectRoot: string,
   homeDir: string,
   existing: CliRecentSessionEntry[]
 ): CliRecentSessionEntry[] {
-  const resolvedRoot = path.resolve(projectRoot);
-  const normRootLower = resolvedRoot.replaceAll("\\", "/").toLowerCase();
+  const discovered = discoverProjectCliSessions(projectRoot, { homeDir });
   const byKey = new Map<string, CliRecentSessionEntry>();
 
-  for (const item of existing) {
+  for (const item of [...existing, ...discovered]) {
     const isSes =
       item.harnessSessionId.startsWith("ses_") ||
       Boolean(
@@ -333,189 +358,23 @@ function discoverExtraCliSessionsForProject(
           /[\\/]ses_[A-Za-z0-9_-]+\.jsonl$/i.test(item.transcriptPath)
       );
     const correctedHarness: HarnessId = isSes ? "opencode" : item.harness;
-    const normalizedItem: CliRecentSessionEntry = {
-      ...item,
-      harness: correctedHarness,
-    };
-    byKey.set(`${correctedHarness}::${item.harnessSessionId}`, normalizedItem);
-  }
-
-  // Only scan user's real OS homedir if homeDir is os.homedir() (avoid polluting isolated unit test temp homes)
-  const scanHomes = [homeDir];
-  for (const h of scanHomes) {
-    // 1. Scan OpenCode SQLite DB (`session` table) for sessions matching projectRoot
-    const ocDbPath = path.join(h, ".local", "share", "opencode", "opencode.db");
-    if (fs.existsSync(ocDbPath)) {
-      let db: DatabaseSync | null = null;
-      try {
-        db = new DatabaseSync(ocDbPath, { readOnly: true });
-        const rows = db
-          .prepare(
-            "SELECT id, title, directory, time_created, time_updated FROM session WHERE EXISTS (SELECT 1 FROM message m WHERE m.session_id = session.id) ORDER BY time_updated DESC LIMIT 60"
-          )
-          .all() as Array<{
-          id?: unknown;
-          title?: unknown;
-          directory?: unknown;
-          time_created?: unknown;
-          time_updated?: unknown;
-        }>;
-        for (const r of rows) {
-          if (typeof r.id !== "string" || !r.id.trim()) continue;
-          const dir =
-            typeof r.directory === "string"
-              ? path.resolve(r.directory).replaceAll("\\", "/").toLowerCase()
-              : "";
-          if (dir !== normRootLower) continue;
-          // Skip subagent child sessions (`... (@subagent)`)
-          const title = typeof r.title === "string" ? r.title.trim() : "";
-          if (title.includes("subagent)")) continue;
-          const key = `opencode::${r.id}`;
-          const prev = byKey.get(key);
-          const updatedAt =
-            typeof r.time_updated === "number" ? r.time_updated : Date.now();
-          const startedAt =
-            typeof r.time_created === "number" ? r.time_created : updatedAt;
-          if (prev) {
-            prev.transcriptPath = ocDbPath;
-            if (!prev.summary && title) prev.summary = title;
-            if (updatedAt > prev.updatedAt) prev.updatedAt = updatedAt;
-          } else {
-            byKey.set(key, {
-              harnessSessionId: r.id,
-              harness: "opencode",
-              model: null,
-              summary: title || `OpenCode (${r.id.slice(0, 10)})`,
-              transcriptPath: ocDbPath,
-              asdSessionId: null,
-              projectRoot: resolvedRoot,
-              startedAt,
-              updatedAt,
-            });
-          }
-        }
-      } catch {
-        // Ignore opencode.db scan errors
-      } finally {
-        try {
-          db?.close();
-        } catch {}
-      }
-    }
-
-    // 2. Scan Claude Code ~/.claude/projects/<encoded>*/*.jsonl matching projectRoot (including --asd-wt-* worktrees)
-    const encodedDirLower = resolvedRoot.replace(/[:\\/]/g, "-").toLowerCase();
-    const claudeProjectsRoot = path.join(h, ".claude", "projects");
-    if (fs.existsSync(claudeProjectsRoot)) {
-      try {
-        const projDirs = fs
-          .readdirSync(claudeProjectsRoot, { withFileTypes: true })
-          .filter((d) => {
-            if (!d.isDirectory()) return false;
-            const n = d.name.toLowerCase();
-            return (
-              n === encodedDirLower ||
-              n.startsWith(`${encodedDirLower}--asd-wt-`)
-            );
-          });
-        for (const pDir of projDirs) {
-          const claudeProjDir = path.join(claudeProjectsRoot, pDir.name);
-          const isWorktree = pDir.name.toLowerCase().includes("--asd-wt-");
-          const files = fs.readdirSync(claudeProjDir, { withFileTypes: true });
-          for (const f of files) {
-            if (!f.isFile() || !f.name.endsWith(".jsonl")) continue;
-            const sid = f.name.slice(0, -".jsonl".length);
-            if (!sid || sid.startsWith("ses_")) continue;
-            const fullPath = path.join(claudeProjDir, f.name);
-            const stat = fs.statSync(fullPath);
-            const key = `claude-code::${sid}`;
-
-            let summary = "";
-            let detectedModel: string | null = null;
-            let hasAssistantTurn = false;
-            try {
-              const rawContent = fs.readFileSync(fullPath, "utf8");
-              hasAssistantTurn =
-                rawContent.includes('"type":"assistant"') ||
-                rawContent.includes('"type":"result"');
-              const headLines = rawContent.slice(0, 24576).split(/\r?\n/);
-              for (const line of headLines) {
-                if (!line.trim()) continue;
-                if (
-                  !line.includes('"type":"user"') &&
-                  !line.includes('"lastPrompt"') &&
-                  !line.includes('"model"')
-                ) {
-                  continue;
-                }
-                const parsed = JSON.parse(line) as {
-                  type?: string;
-                  lastPrompt?: string;
-                  params?: { model?: string };
-                  message?: { content?: string; model?: string };
-                };
-                if (!detectedModel) {
-                  const m =
-                    parsed.message?.model || parsed.params?.model || null;
-                  if (typeof m === "string" && m.trim()) {
-                    detectedModel = normalizeModelId(m.trim());
-                  }
-                }
-                if (!summary) {
-                  const rawPrompt =
-                    typeof parsed.lastPrompt === "string" &&
-                    parsed.lastPrompt.trim()
-                      ? parsed.lastPrompt.trim()
-                      : parsed.type === "user" &&
-                          typeof parsed.message?.content === "string"
-                        ? parsed.message.content.trim()
-                        : "";
-                  if (rawPrompt) {
-                    const taskMatch = rawPrompt.match(
-                      /#\s*ASD Subagent Task:\s*([^\r\n]+)\s*[\r\n]+Title:\s*([^\r\n]+)/i
-                    );
-                    if (taskMatch) {
-                      summary = `[${taskMatch[1].trim()}] ${taskMatch[2].trim()}`.slice(
-                        0,
-                        90
-                      );
-                    } else {
-                      summary = rawPrompt
-                        .replace(/\s+/g, " ")
-                        .trim()
-                        .slice(0, 80);
-                    }
-                  }
-                }
-              }
-            } catch {}
-
-            // Skip multi-retry worktree attempts that never produced an assistant turn
-            if (isWorktree && !hasAssistantTurn) continue;
-
-            const prev = byKey.get(key);
-            if (prev) {
-              prev.transcriptPath = fullPath;
-              if (!prev.summary && summary) prev.summary = summary;
-              if (!prev.model && detectedModel) prev.model = detectedModel;
-            } else {
-              byKey.set(key, {
-                harnessSessionId: sid,
-                harness: "claude-code",
-                model: detectedModel,
-                summary: summary || `Claude Code (${sid.slice(0, 8)})`,
-                transcriptPath: fullPath,
-                asdSessionId: null,
-                projectRoot: resolvedRoot,
-                startedAt: Math.round(stat.birthtimeMs || stat.mtimeMs),
-                updatedAt: Math.round(stat.mtimeMs),
-              });
-            }
-          }
-        }
-      } catch {
-        // Ignore claude project scan errors
-      }
+    const key = `${correctedHarness}::${item.harnessSessionId}`;
+    const prev = byKey.get(key);
+    if (prev) {
+      byKey.set(key, {
+        ...prev,
+        harness: correctedHarness,
+        model: prev.model || item.model || null,
+        summary: prev.summary || item.summary || "",
+        transcriptPath: prev.transcriptPath || item.transcriptPath || null,
+        asdSessionId: item.asdSessionId ?? prev.asdSessionId ?? null,
+        updatedAt: Math.max(prev.updatedAt || 0, item.updatedAt || 0),
+      });
+    } else {
+      byKey.set(key, {
+        ...item,
+        harness: correctedHarness,
+      });
     }
   }
 
@@ -547,7 +406,6 @@ export async function collectEnrichedSnapshot(
   projectRoot: string,
   homeDir: string
 ): Promise<EnrichedSnapshot> {
-  await discoverHarnessModels({ projectRoot, homeDir, skipCliSpawn: true });
   if (
     !asyncCliScanCompleted &&
     !asyncCliScanInFlight &&
@@ -556,7 +414,11 @@ export async function collectEnrichedSnapshot(
   ) {
     void refreshAsyncCliModels().catch(() => {});
   }
-  const snapshot = await collectDashboardSnapshot({ projectRoot, homeDir });
+  const snapshot = await collectDashboardSnapshot({
+    projectRoot,
+    homeDir,
+    skipCliSpawn: true,
+  });
   const availableModels = buildMergedModelCatalog(snapshot.availableModels, homeDir);
   const gitInfo = getProjectGitInfo(projectRoot);
   const rememberedFg = getRememberedForegroundSessionId(projectRoot);
@@ -584,8 +446,7 @@ export async function collectEnrichedSnapshot(
       )
     : snapshot.debates;
 
-  // Normalize `ses_...` OpenCode sessions in cliRecentSessions & drivers
-  const cliRecentSessions = discoverExtraCliSessionsForProject(
+  const cliRecentSessions = mergeDiscoveredCliSessions(
     projectRoot,
     homeDir,
     snapshot.cliRecentSessions ?? []

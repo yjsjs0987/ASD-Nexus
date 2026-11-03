@@ -8,11 +8,14 @@ import type {
   AsdDispatchOutput,
   AsdPlanInput,
   AsdPlanOutput,
+  CliRecentSessionEntry,
   DashboardSnapshot,
   DriverDetachReason,
   DriverRow,
   DriverRunResult,
   DriverSource,
+  DriverStreamEvent,
+  DriverStreamEventType,
   HarnessId,
   HarnessModelCatalog,
   HarnessTranscript,
@@ -21,21 +24,30 @@ import type {
   SessionPhase,
   TaskStatus,
   TranscriptMessage,
+  TranscriptMessageCategory,
+  TranscriptToolResultItem,
+  TranscriptToolUseItem,
   WorktreeDiffSnapshot,
 } from "agent-swarm-director";
 
 export type {
   AsdDebateOutput,
   AsdDispatchOutput,
+  CliRecentSessionEntry,
   DashboardSnapshot,
   DriverDetachReason,
   DriverRow,
   DriverRunResult,
   DriverSource,
+  DriverStreamEvent,
+  DriverStreamEventType,
   HarnessId,
   HarnessTranscript,
   TaskStatus,
   TranscriptMessage,
+  TranscriptMessageCategory,
+  TranscriptToolResultItem,
+  TranscriptToolUseItem,
 };
 
 // ============================================================================
@@ -177,6 +189,58 @@ export interface UpdateSessionPhaseRequest {
 export interface UpdateSessionPhaseResponse {
   ok: true;
   phase: SessionPhase;
+}
+
+export interface PromoteSessionRequest {
+  projectRoot: string;
+  harness: HarnessId;
+  harnessSessionId: string;
+  model?: string | null;
+  memo?: string | null;
+  transcriptPath?: string | null;
+  asdSessionId?: string;
+  makeForeground?: boolean;
+}
+
+export interface PromoteSessionResponse {
+  ok: true;
+  sessionId: string;
+  driverId: string;
+  driver?: DriverRow;
+  harness: HarnessId;
+  harnessSessionId: string;
+  model: string | null;
+  foregroundSessionId: string | null;
+}
+
+export interface DemoteSessionRequest {
+  projectRoot: string;
+  sessionId: string;
+  deleteAsdSession?: boolean;
+}
+
+export interface DemoteSessionResponse {
+  ok: true;
+  sessionId: string;
+  harness: HarnessId;
+  harnessSessionId: string | null;
+  model: string | null;
+  command: string;
+  args: string[];
+  cliString: string;
+  unlinked: boolean;
+  deleted: boolean;
+}
+
+export interface DeleteSessionRequest {
+  projectRoot: string;
+  sessionId: string;
+}
+
+export interface DeleteSessionResponse {
+  ok: true;
+  sessionId: string;
+  deleted: boolean;
 }
 
 export interface UpdateSessionPlanRequest {
@@ -467,6 +531,13 @@ export type ServerWsMessage =
       runId: string;
       offset: number;
       chunk: string;
+    }
+  | {
+      type: "driver_stream_event";
+      projectRoot: string;
+      sessionId: string;
+      runId: string;
+      event: DriverStreamEvent;
     }
   | {
       type: "log_closed";

@@ -115,8 +115,12 @@ export async function handleProjectsRoutes(
 
     const snapshot = await collectEnrichedSnapshot(projectRoot, context.homeDir);
     if (!process.env.NODE_TEST_CONTEXT && process.env.NODE_ENV !== "test") {
-      void refreshAsyncCliModels()
-        .then(() => watcher.forceBroadcastProject(projectRoot))
+      void refreshAsyncCliModels(false)
+        .then((didScan) => {
+          if (didScan) {
+            return watcher.forceBroadcastProject(projectRoot);
+          }
+        })
         .catch(() => {});
     }
     const response: OpenProjectResponse = {
