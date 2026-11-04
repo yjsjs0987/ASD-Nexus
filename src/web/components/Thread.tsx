@@ -296,7 +296,7 @@ function ToolActivityBox({
           {uses.map((u, idx) => {
             const matchedRes =
               (u.id ? results.find((r) => r.toolUseId === u.id) : undefined) ??
-              (uses.length === results.length ? results[idx] : undefined);
+              results[idx];
             return (
               <div key={u.id ?? `tu-${idx}`} className="asd-tool-item">
                 <div className="row" style={{ gap: 6, marginBottom: 4 }}>
@@ -321,8 +321,15 @@ function ToolActivityBox({
               </div>
             );
           })}
-          {uses.length === 0 &&
-            results.map((r, idx) => (
+          {/* Render remaining results that weren't matched to a specific use */}
+          {results
+            .filter((r, idx) => {
+              if (uses.length === 0) return true;
+              if (r.toolUseId && uses.some((u) => u.id === r.toolUseId)) return false;
+              if (!r.toolUseId && idx < uses.length) return false;
+              return true;
+            })
+            .map((r, idx) => (
               <div key={r.toolUseId ?? `tr-${idx}`} className="asd-tool-item">
                 <div className="row" style={{ gap: 6, marginBottom: 4 }}>
                   <span className={`tag ${r.isError ? "err" : "ok"}`}>

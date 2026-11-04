@@ -58,6 +58,8 @@ function stripSystemTags(raw: string): string {
     .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, "")
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/gi, "")
     .replace(/<local-command-caveat>[\s\S]*?<\/local-command-caveat>/gi, "")
+    .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>/gi, "")
+    .replace(/<command-message>[\s\S]*?<\/command-message>/gi, "")
     .trim();
   return text;
 }
@@ -84,7 +86,11 @@ function normalizeTranscriptMessage(msg: TranscriptMessage): TranscriptMessage {
   } else if (
     rawRole === "tool" ||
     rawRole === "tool_result" ||
-    rawRole === "tool_use"
+    rawRole === "tool_use" ||
+    rawRole === "tool_response" ||
+    rawRole === "generic" ||
+    rawRole === "function_call_output" ||
+    rawRole === "custom_tool_call_output"
   ) {
     role = "tool";
   } else if (rawRole === "system" || rawRole === "system_message") {
