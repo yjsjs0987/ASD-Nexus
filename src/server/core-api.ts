@@ -11,7 +11,7 @@ import {
   atomicWriteFileSync,
   attachDriver,
   buildDriverBriefing,
-  buildInteractiveResumeHarnessCommand as rawBuildInteractiveResumeHarnessCommand,
+  buildInteractiveResumeHarnessCommand,
   buildResumeHarnessCommand as rawBuildResumeHarnessCommand,
   buildSessionDemotion,
   collectDashboardSnapshot,
@@ -128,6 +128,7 @@ export {
   atomicWriteFileSync,
   attachDriver,
   buildDriverBriefing,
+  buildInteractiveResumeHarnessCommand,
   buildSessionDemotion,
   collectDashboardSnapshot,
   computeProjectHash,
@@ -231,37 +232,6 @@ export {
   type TranscriptToolUseItem,
   type WorktreeDiffSnapshot,
 };
-
-/**
- * Antigravity CLI (`agy`) uses `--conversation <id>` (not `--resume <id>`) to resume
- * an existing conversation. Normalize any `--resume` flag on `agy` commands.
- */
-export function buildInteractiveResumeHarnessCommand(
-  harnessOrOptions:
-    | HarnessId
-    | {
-        harness: HarnessId;
-        harnessSessionId?: string | null;
-        model?: string | null;
-      },
-  harnessSessionId?: string | null,
-  model?: string | null
-): { command: string; args: string[]; cliString: string } {
-  const built = rawBuildInteractiveResumeHarnessCommand(
-    harnessOrOptions as never,
-    harnessSessionId,
-    model
-  );
-  if (built.command === "agy") {
-    const args = built.args.map((a) => (a === "--resume" ? "--conversation" : a));
-    return {
-      command: built.command,
-      args,
-      cliString: [built.command, ...args].join(" "),
-    };
-  }
-  return built;
-}
 
 export function buildResumeHarnessCommand(
   harnessOrOptions:
